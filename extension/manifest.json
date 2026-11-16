@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "GeBridge v2 — Gemini Enterprise Local AI Connector",
+  "version": "2.1.0",
+  "description": "Full-duplex WebSocket bridge with dynamic Model Discovery & Switching for Gemini Enterprise.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw6cQQYo9urpSgkNbtYmOQ8TyQw52IsjqY1e9vsqniIIEVSfAjRffeHydg+ca5/Da//B72Fa+2+INUwH0ckJpz7y5huftdCOg0Y4rfbeiaj2rkkua0hp/e+NAY8w2FKtZpzTzLDR3A1Pu559nh7TK//RLXczWGogQe3ZlJsJonYjaFldkiMgqyd2Ma270ngBveG++l0t2/TzkAUSb7rDBduXBRhNNC12Bu/xxVtT6whmqaQLQgqvx70d2KJ765XtldGhH6fdCC7MShrZjmjNZ6FMw7yOhQF3YxQasdkmts/ArAyuFF//pQkj2xTC351EG277Xuz4UhGhNpLgtW6g/cwIDAQAB",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://vertexaisearch.cloud.google/*",
+    "https://vertexaisearch.cloud.google.com/*",
+    "https://content-us-discoveryengine.googleapis.com/*",
+    "https://content-eu-discoveryengine.googleapis.com/*",
+    "https://content-global-discoveryengine.googleapis.com/*",
+    "http://127.0.0.1:8787/*"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "GeBridge v2",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://vertexaisearch.cloud.google/*",
+        "https://vertexaisearch.cloud.google.com/*"
+      ],
+      "js": [
+        "lib/log.js",
+        "lib/gemini.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

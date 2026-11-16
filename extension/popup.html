@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body { width:310px; margin:0; padding:15px; background:#0b1120; color:#f1f5f9; font-family:"Segoe UI",system-ui,sans-serif; }
+    h3 { margin:0 0 8px; font-size:14px; }
+    .st { display:flex; align-items:center; gap:7px; font-size:12px; color:#94a3b8; margin-bottom:6px; }
+    .st b { color:#cbd5e1; min-width:48px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:#f59e0b; flex:none; }
+    .dot.ok { background:#22c55e; box-shadow:0 0 8px #22c55e; }
+    .dot.bad { background:#ef4444; }
+    label { display:block; font-size:11px; color:#94a3b8; margin:7px 0 3px; }
+    select { width:100%; box-sizing:border-box; padding:7px 9px; border-radius:7px; border:1px solid #28354f; background:#050811; color:#e2e8f0; font-size:12px; }
+    input { width:100%; box-sizing:border-box; padding:7px 9px; border-radius:7px; border:1px solid #28354f; background:#050811; color:#e2e8f0; font-size:12px; }
+    .btns { display:grid; gap:6px; margin-top:11px; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    button { padding:8px; border-radius:7px; border:none; font-weight:600; font-size:12px; cursor:pointer; background:#3b82f6; color:#fff; }
+    button.sec { background:#172238; border:1px solid #28354f; color:#cbd5e1; }
+    .note { color:#64748b; font-size:10.5px; margin-top:4px; }
+    .err { color:#f87171; font-size:11px; margin-top:7px; min-height:14px; }
+    .hint { color:#fbbf24; font-size:11px; margin-top:4px; }
+    pre { margin:8px 0 0; padding:8px; border-radius:7px; background:#050811; border:1px solid #28354f; color:#cbd5e1; font:11px/1.45 Consolas,monospace; white-space:pre-wrap; word-break:break-all; }
+    pre:empty { display:none; }
+    details { margin-top:12px; border-top:1px solid #28354f; padding-top:8px; }
+    summary { cursor:pointer; font-size:12px; color:#94a3b8; }
+    .check { display:flex; align-items:center; gap:7px; font-size:12px; color:#cbd5e1; margin:9px 0 2px; }
+    .check input { width:auto; margin:0; }
+  </style>
+</head>
+<body>
+  <h3>⚡ GeBridge v2 (Tray Edition)</h3>
+  <div class="st"><span class="dot" id="srvDot"></span><b>Server</b><span id="srvTxt">Checking...</span></div>
+  <div class="st"><span class="dot" id="gemDot"></span><b>Gemini</b><span id="gemTxt">Checking...</span></div>
+
+  <div class="btns">
+    <div class="row">
+      <button id="pingSrvBtn" class="sec">Ping server</button>
+      <button id="pingGemBtn" class="sec">Ping Gemini</button>
+    </div>
+    <div class="note">Ping Gemini may create an empty session in your Gemini history.</div>
+    <button id="openBtn">Open Gemini Enterprise</button>
+    <button id="scanBtn" class="sec">🔄 Scan Available Models Now</button>
+    <button id="dashBtn" class="sec">🌐 Open Control Center</button>
+    <button id="calBtn" class="sec">🎯 Calibrate UI Selectors</button>
+  </div>
+  <pre id="out"></pre>
+  <div class="hint" id="hint"></div>
+  <div class="err" id="err"></div>
+
+  <details id="logsBox">
+    <summary>Logs</summary>
+    <div class="note" id="logCount">Entries: ...</div>
+    <div class="note" id="logLast"></div>
+    <div class="btns">
+      <button id="dlLogBtn" class="sec">Download log</button>
+      <button id="copyDiagBtn" class="sec">Copy diagnostics</button>
+    </div>
+  </details>
+
+  <details>
+    <summary>Advanced</summary>
+    <label>Gemini URL (paste your home page URL once)</label>
+    <input id="geminiUrl" placeholder="https://vertexaisearch.cloud.google/.../home/cid/...?csesidx=..." />
+    <label>Transport</label>
+    <select id="transport">
+      <option value="auto">Auto (API, then page API, then DOM)</option>
+      <option value="api-sw">API from extension</option>
+      <option value="api-tab">API from tab</option>
+      <option value="dom">DOM (type into the page)</option>
+    </select>
+    <label class="check"><input id="pacingOn" type="checkbox" /> Human pacing between questions</label>
+    <div class="note">Waits about as long as reading the last answer takes (random words-per-minute plus jitter) before sending the next question. Agent tool loops get slower.</div>
+    <div class="row">
+      <div><label>Reading speed min (wpm)</label><input id="wpmMin" type="number" min="50" max="1000" step="10" /></div>
+      <div><label>Reading speed max (wpm)</label><input id="wpmMax" type="number" min="50" max="1000" step="10" /></div>
+      <div><label>Min delay (s)</label><input id="minDelay" type="number" min="0" max="600" step="0.5" /></div>
+      <div><label>Max delay (s)</label><input id="maxDelay" type="number" min="0" max="600" step="1" /></div>
+    </div>
+    <label>Default model (used when the harness sends none)</label>
+    <select id="defaultModel">
+      <option value="auto">Auto (Gemini chooses)</option>
+    </select>
+    <label>Local Daemon Host</label>
+    <input id="host" value="127.0.0.1:8787" />
+    <label>Pairing Token (manual fallback)</label>
+    <input id="token" type="password" placeholder="gemb_..." />
+    <div class="btns">
+      <button id="saveUrlBtn" class="sec">Save Gemini URL</button>
+      <button id="saveBtn" class="sec">Save & Connect WebSocket</button>
+    </div>
+  </details>
+  <script src="lib/log.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

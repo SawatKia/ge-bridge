@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="icon" href="/favicon.ico">
+  <meta charset="UTF-8" />
+  <title>GeBridge v2 — Universal Local AI Control Center</title>
+  <style>
+    :root { --bg:#090d16; --card:#121929; --line:#22304d; --txt:#e5edf9; --sub:#8ea2c6; --pri:#3b82f6; --ok:#22c55e; --warn:#f59e0b; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:24px; background:radial-gradient(circle at top,#14213d,var(--bg) 55%); color:var(--txt); font-family:"Segoe UI",system-ui,sans-serif; }
+    .wrap { max-width:1020px; margin:0 auto; display:grid; gap:16px; }
+    .bar, .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; }
+    .bar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+    h1 { margin:0; font-size:1.15rem; }
+    h2 { margin:0 0 10px; font-size:0.95rem; color:#c3d4f5; }
+    .sub { color:var(--sub); font-size:0.83rem; }
+    .pills { display:flex; gap:8px; flex-wrap:wrap; }
+    .pill { display:inline-flex; align-items:center; gap:6px; padding:6px 11px; border-radius:999px; background:#18233a; border:1px solid var(--line); font-size:0.78rem; font-weight:600; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--warn); }
+    .dot.ok { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); gap:16px; }
+    select, textarea, input { width:100%; background:#080c14; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:9px 11px; font:inherit; font-size:0.85rem; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    button { background:var(--pri); color:#fff; border:none; border-radius:8px; padding:8px 13px; font-weight:600; font-size:0.82rem; cursor:pointer; }
+    button.sec { background:#1a2640; border:1px solid var(--line); color:var(--txt); }
+    pre { margin:10px 0 0; background:#080c14; border:1px solid var(--line); border-radius:8px; padding:11px; font-size:0.8rem; white-space:pre-wrap; max-height:210px; overflow:auto; }
+    .toast { color:var(--ok); font-size:0.8rem; min-height:18px; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="bar">
+      <div>
+        <h1>⚡ GeBridge v2 — Windows Tray Local AI Server</h1>
+        <div class="sub" id="tabSummary">Waiting for Chrome / Edge Extension connection...</div>
+      </div>
+      <div class="pills">
+        <div class="pill"><span class="dot ok"></span> Rust Core Online</div>
+        <div class="pill"><span class="dot" id="extDot"></span> <span id="extLbl">Extension Offline</span></div>
+        <div class="pill"><span class="dot" id="tabDot"></span> <span id="tabLbl">0 Tabs</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Gemini Tabs</h2>
+      <ul id="tabList" style="margin:0;padding-left:18px;font-size:0.85rem;line-height:1.6;"></ul>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Model Discovery & Default Selection</h2>
+        <label class="sub">Default Model (used by System Tray & fallback):</label>
+        <select id="modelSelect"></select>
+        <label class="sub" style="margin-top:8px;display:block;">Reasoning Effort:</label>
+        <select id="effortSelect">
+          <option value="auto">Auto</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="max">Max</option>
+        </select>
+        <div class="row">
+          <button id="saveModelBtn">Save Default</button>
+          <button id="refreshModelsBtn" class="sec">🔄 Refresh Models from Web</button>
+        </div>
+        <div class="sub" id="modelsAge"></div>
+        <div class="toast" id="modelToast"></div>
+      </div>
+
+      <div class="card">
+        <h2>1-Click Harness Integrations & Pairing</h2>
+        <div class="sub">Local Pairing Token (stored in Windows Credential Manager):</div>
+        <input id="tokenInput" readonly value="__INJECT_BRIDGE_TOKEN__" style="margin-top:6px;font-family:monospace;" />
+        <div class="row">
+          <button id="copyTokenBtn">Copy Token</button>
+          <button id="linkMausBtn">⚡ Auto-Link OpenMausBot</button>
+          <button id="resetBtn" class="sec">Reset Session Cache</button>
+        </div>
+        <div class="sub" style="margin-top:8px;">Endpoints: <b>OpenAI</b> <code>/v1/chat/completions</code> • <b>Anthropic</b> <code>/v1/messages</code> • <b>Models</b> <code>/v1/models</code></div>
+        <div class="toast" id="intToast"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Live Streaming & Model Switch Playground</h2>
+      <textarea id="promptBox" rows="2">Confirm which model you are running as in one crisp sentence.</textarea>
+      <div class="row">
+        <button id="sendBtn">Stream via /v1/chat/completions</button>
+      </div>
+      <pre id="streamOut">Output will stream here (including [Thinking] separation if present)...</pre>
+    </div>
+
+    <div class="card">
+      <h2>Live Server Logs</h2>
+      <pre id="logsOut"></pre>
+    </div>
+  </div>
+
+  <script>
+    const TOKEN = document.getElementById('tokenInput').value.trim();
+    const headers = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+    const flash = (id, msg) => { const el = document.getElementById(id); el.textContent = msg; setTimeout(() => el.textContent = '', 4000); };
+
+    function applyState(s, logs) {
+      document.getElementById('extDot').className = 'dot ' + (s.extensionConnected ? 'ok' : '');
+      document.getElementById('extLbl').textContent = s.extensionConnected ? 'Extension WS Connected' : 'Extension Offline';
+      document.getElementById('tabDot').className = 'dot ' + (s.tabReady ? 'ok' : '');
+      const list = s.tabList || [];
+      document.getElementById('tabLbl').textContent = `${s.browserTabs ?? list.length} browser tab(s) + ${list.length - (s.browserTabs ?? list.length)} API lane(s)`;
+      const ul = document.getElementById('tabList');
+      ul.replaceChildren(...list.map((t) => {
+        const li = document.createElement('li');
+        li.textContent = `${t.label}  [#${t.tabId}]`;
+        if (t.url) li.title = t.url;
+        return li;
+      }));
+      if (!list.length) ul.innerHTML = '<li class="sub">No Gemini tabs reported by the extension.</li>';
+      document.getElementById('tabSummary').textContent = s.tabReady
+        ? `Ready | Default Model: ${s.defaultModel}`
+        : 'Open your Gemini Enterprise URL (vertexaisearch.cloud.google) in Chrome or Edge and pair the extension.';
+
+      const age = s.modelsAgeSecs;
+      document.getElementById('modelsAge').textContent = age == null
+        ? 'Model list never scanned from Gemini.'
+        : `Model list scanned ${age < 3600 ? Math.round(age / 60) + ' min' : Math.round(age / 3600) + ' h'} ago; reused for 24 h, the button rescans now.`;
+      const sel = document.getElementById('modelSelect');
+      sel.innerHTML = '';
+      (s.models || []).forEach((m) => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = `${m.display_name} (${m.id})`;
+        if (m.id === s.defaultModel) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      document.getElementById('effortSelect').value = s.reasoningEffort || 'auto';
+
+      if (logs) {
+        document.getElementById('logsOut').textContent = logs
+          .slice()
+          .reverse()
+          .map((l) => `[${new Date(l.ts * 1000).toLocaleTimeString()}] ${l.level.toUpperCase()}: ${l.message}`)
+          .join('\n');
+      }
+    }
+
+    const es = new EventSource('/api/events?token=' + encodeURIComponent(TOKEN));
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.status) applyState(data.status, data.logs);
+    };
+
+    document.getElementById('saveModelBtn').onclick = async () => {
+      await fetch('/api/prefs', {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          defaultModel: document.getElementById('modelSelect').value,
+          reasoningEffort: document.getElementById('effortSelect').value
+        })
+      });
+      flash('modelToast', 'Saved default model & synced with Windows System Tray!');
+    };
+
+    document.getElementById('refreshModelsBtn').onclick = async () => {
+      await fetch('/api/refresh-models', { method: 'POST', headers });
+      flash('modelToast', 'Requested live Model Picker scan from Gemini Enterprise tab...');
+    };
+
+    document.getElementById('copyTokenBtn').onclick = async () => {
+      await navigator.clipboard.writeText(TOKEN);
+      flash('intToast', 'Copied pairing token!');
+    };
+
+    document.getElementById('linkMausBtn').onclick = async () => {
+      const r = await fetch('/api/link-openmausbot', { method: 'POST', headers });
+      const d = await r.json();
+      flash('intToast', d.ok ? `Updated ${d.path} — restart OpenMausBot!` : d.error?.message);
+    };
+
+    document.getElementById('resetBtn').onclick = async () => {
+      await fetch('/api/reset-sessions', { method: 'POST', headers });
+      flash('intToast', 'Session cache cleared.');
+    };
+
+    document.getElementById('sendBtn').onclick = async () => {
+      const out = document.getElementById('streamOut');
+      const model = document.getElementById('modelSelect').value;
+      const effort = document.getElementById('effortSelect').value;
+      out.textContent = `Dispatching to ${model} (effort=${effort})...\n`;
+      const res = await fetch('/v1/chat/completions', {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          model, reasoning_effort: effort, stream: true,
+          messages: [{ role: 'user', content: document.getElementById('promptBox').value }]
+        })
+      });
+      if (!res.ok) { out.textContent = await res.text(); return; }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '', cotShown = false;
+      out.textContent = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const l of lines) {
+          if (!l.startsWith('data: ') || l === 'data: [DONE]') continue;
+          const j = JSON.parse(l.slice(6));
+          if (j.error) out.textContent += `\n[ERROR]: ${j.error.message}`;
+          const d = j.choices?.[0]?.delta || {};
+          if (d.reasoning_content) {
+            if (!cotShown) { out.textContent += '[Thinking]\n'; cotShown = true; }
+            out.textContent += d.reasoning_content;
+          }
+          if (d.content) {
+            if (cotShown) { out.textContent += '\n[/Thinking]\n\n'; cotShown = false; }
+            out.textContent += d.content;
+          }
+        }
+      }
+    };
+  </script>
+</body>
+</html>
