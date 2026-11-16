@@ -1,7 +1,7 @@
 use crate::integrations;
 use crate::state::{hash_json, now_secs, AppState, DomStreamEvent, ModelInfo, SessionEntry, TabState};
 use crate::stream::{
-    parse_anthropic_messages, parse_openai_messages, render_turn_prompt, NormalizedMessage,
+    is_base64_image, parse_anthropic_messages, parse_openai_messages, render_turn_prompt, NormalizedMessage,
     ParsedToolCall, StreamInterceptor,
 };
 use axum::{
@@ -134,6 +134,16 @@ fn json_error(status: StatusCode, msg: &str) -> Response {
         Json(json!({ "error": { "message": msg, "type": "bridge_error" } })),
     )
         .into_response()
+}
+
+/// A 400 when any image is not a base64 data URL: the extension would silently skip it.
+fn reject_non_base64_images(messages: &[NormalizedMessage]) -> Option<Response> {
+    messages.iter().flat_map(|m| &m.images).any(|u| !is_base64_image(u)).then(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "Image URLs are not supported; send the image as base64 (a data: URL or a base64 source)",
+        )
+    })
 }
 
 async fn cors_preflight_or_404(method: Method, headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
@@ -926,6 +936,9 @@ async fn openai_chat_completions(
 
     let raw_msgs = body.get("messages").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let messages = parse_openai_messages(&raw_msgs);
+    if let Some(r) = reject_non_base64_images(&messages) {
+        return r;
+    }
     let tools = body.get("tools").and_then(|v| v.as_array()).cloned();
     let req_model = body.get("model").and_then(|v| v.as_str());
     let req_effort = body.get("reasoning_effort").and_then(|v| v.as_str());
@@ -1153,6 +1166,9 @@ async fn anthropic_messages(
     }
     let raw_msgs = body.get("messages").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let messages = parse_anthropic_messages(body.get("system"), &raw_msgs);
+    if let Some(r) = reject_non_base64_images(&messages) {
+        return r;
+    }
     let tools = body.get("tools").and_then(|v| v.as_array()).cloned();
     let req_model = body.get("model").and_then(|v| v.as_str());
     let is_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);

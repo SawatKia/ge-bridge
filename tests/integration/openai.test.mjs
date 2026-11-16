@@ -1,7 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { setup } from '../support/harness.mjs';
-import { REPLY } from '../support/fake-extension.mjs';
+import { REPLY, FAKE_PNG_B64 } from '../support/fake-extension.mjs';
 import { sse, j, user } from '../support/http.mjs';
 
 describe('openai /v1/chat/completions', () => {
@@ -36,5 +36,20 @@ describe('openai /v1/chat/completions', () => {
     assert.notEqual(j(t), null, 'error body must be JSON');
     const h = await fetch(`${s.base}/api/status`, { headers: s.auth });
     assert.equal(h.status, 200);
+  });
+
+  it('a data-URL image reaches the extension', async () => {
+    const url = `data:image/png;base64,${FAKE_PNG_B64}`;
+    const r = await s.chat({ stream: false, messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url } }] }] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(s.ext.runTurns.at(-1).images, [url]);
+  });
+
+  it('an http image_url is rejected with 400 and nothing is dispatched', async () => {
+    const before = s.ext.runTurns.length;
+    const r = await s.chat({ stream: false, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/a.png' } }] }] });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error.message, /Image URLs are not supported/);
+    assert.equal(s.ext.runTurns.length, before);
   });
 });

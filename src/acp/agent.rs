@@ -115,6 +115,27 @@ pub fn blocks_to_text(blocks: &Value) -> String {
     parts.join("\n\n")
 }
 
+/// Prompt text without image blocks, plus the images as `data:` URLs.
+fn blocks_to_text_and_images(blocks: &Value) -> (String, Vec<String>) {
+    let arr = blocks.as_array().cloned().unwrap_or_default();
+    let (imgs, rest): (Vec<Value>, Vec<Value>) = arr.into_iter().partition(|b| b["type"].as_str() == Some("image"));
+    let urls = imgs
+        .iter()
+        .filter_map(|b| Some(format!("data:{};base64,{}", b["mimeType"].as_str()?, b["data"].as_str()?)))
+        .collect();
+    (blocks_to_text(&Value::Array(rest)), urls)
+}
+
+/// `content` for a chat message: a plain string, or text plus `image_url` parts when there are images.
+fn content_with_images(text: &str, images: &[String]) -> Value {
+    if images.is_empty() {
+        return Value::String(text.to_string());
+    }
+    let mut parts = vec![json!({ "type": "text", "text": text })];
+    parts.extend(images.iter().map(|u| json!({ "type": "image_url", "image_url": { "url": u } })));
+    Value::Array(parts)
+}
+
 fn system_prompt(root: &Path) -> String {
     format!(
         "Coding agent working in the folder {}. The machine runs Windows; run_command uses PowerShell syntax. \
@@ -142,7 +163,7 @@ impl Agent {
                 "protocolVersion": 1,
                 "agentCapabilities": {
                     "loadSession": false,
-                    "promptCapabilities": { "image": false, "audio": false, "embeddedContext": true },
+                    "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
                     "mcpCapabilities": { "http": false, "sse": false }
                 },
                 "authMethods": [],
@@ -237,12 +258,13 @@ impl Agent {
             return Err(RpcError::new(-32000, "a prompt is already running in this session"));
         }
         s.cancel.store(false, Ordering::Relaxed);
-        let (context, text) = split_bot_context(&blocks_to_text(&params["prompt"]));
+        let (prompt_text, images) = blocks_to_text_and_images(&params["prompt"]);
+        let (context, text) = split_bot_context(&prompt_text);
         if context.is_some() {
             *s.bot_context.lock() = context;
         }
         let start_len = s.history.lock().len();
-        s.history.lock().push(json!({ "role": "user", "content": text }));
+        s.history.lock().push(json!({ "role": "user", "content": content_with_images(&text, &images) }));
         let res = self.run_loop(&s, &sid);
         s.busy.store(false, Ordering::Release);
         match res {
@@ -320,12 +342,13 @@ impl Agent {
                 return Ok("end_turn");
             }
             for tc in &turn.tool_calls {
+                let mut images = Vec::new();
                 let text = if s.cancel.load(Ordering::Relaxed) {
                     "Cancelled by the user.".to_string()
                 } else {
-                    self.run_call(s, sid, &hub, tc)
+                    self.run_call(s, sid, &hub, tc, &mut images)
                 };
-                s.history.lock().push(json!({ "role": "tool", "tool_call_id": tc.id, "content": text }));
+                s.history.lock().push(json!({ "role": "tool", "tool_call_id": tc.id, "content": content_with_images(&text, &images) }));
             }
             if s.cancel.load(Ordering::Relaxed) {
                 return Ok("cancelled");
@@ -351,7 +374,7 @@ impl Agent {
     }
 
     /// Runs one tool call end to end (updates, approval, execution); returns the text for the model.
-    fn run_call(&self, s: &Arc<Session>, sid: &str, hub: &Option<Arc<McpHub>>, tc: &ToolCallOut) -> String {
+    fn run_call(&self, s: &Arc<Session>, sid: &str, hub: &Option<Arc<McpHub>>, tc: &ToolCallOut, images: &mut Vec<String>) -> String {
         let id = tc.id.as_str();
         let name = tc.name.as_str();
         let parsed: Result<Value, String> = if tc.arguments_json.trim().is_empty() {
@@ -467,6 +490,7 @@ impl Agent {
                     }
                     Err(e) => outcome.text.push_str(&format!("\nCould not save the image: {e}")),
                 }
+                images.push(format!("data:{};base64,{}", img.mime, img.b64));
                 extra.push(json!({ "type": "content", "content": { "type": "image", "mimeType": img.mime, "data": img.b64 } }));
             }
         }
@@ -545,6 +569,18 @@ mod tests {
         let t = blocks_to_text(&b);
         assert!(t.contains("hi") && t.contains("[file: file:///a.txt] (a.txt)"));
         assert!(t.contains("File file:///b.txt:\n```\nbody\n```") && t.contains("(image omitted)"));
+    }
+
+    #[test]
+    fn image_blocks_become_data_urls() {
+        let b = json!([{ "type": "text", "text": "what" }, { "type": "image", "data": "QUJD", "mimeType": "image/png" }]);
+        let (text, imgs) = blocks_to_text_and_images(&b);
+        assert_eq!(text, "what");
+        assert_eq!(imgs, vec!["data:image/png;base64,QUJD".to_string()]);
+        let c = content_with_images(&text, &imgs);
+        assert_eq!(c[0]["text"], "what");
+        assert_eq!(c[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(content_with_images("hi", &[]), json!("hi"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setup } from '../support/harness.mjs';
 import { BIN_DIR } from '../support/server.mjs';
-import { REPLY } from '../support/fake-extension.mjs';
+import { REPLY, FAKE_PNG_B64 } from '../support/fake-extension.mjs';
 import { startAcp, messageText } from '../support/acp-client.mjs';
 
 const CLI = path.join(BIN_DIR, 'ge-bridge-cli.exe');
@@ -42,6 +42,7 @@ describe('ge-bridge-cli acp', () => {
     assert.equal(r.protocolVersion, 1);
     assert.equal(r.agentCapabilities.loadSession, false);
     assert.equal(r.agentCapabilities.promptCapabilities.embeddedContext, true);
+    assert.equal(r.agentCapabilities.promptCapabilities.image, true);
     assert.equal(r.agentInfo.name, 'ge-bridge');
     assert.deepEqual((await acp.request('authenticate', { methodId: 'x' })).result, {});
     await finish();
@@ -159,6 +160,7 @@ describe('ge-bridge-cli acp', () => {
 
     r = await acp.request('session/prompt', promptOf(sid, call('fake_image', { })));
     assert.equal(r.result.stopReason, 'end_turn', JSON.stringify(r));
+    const last = s.ext.runTurns.at(-1);
     const dir = path.join(cwd, 'generated-images');
     const files = fs.readdirSync(dir);
     assert.equal(files.length, 1);
@@ -167,6 +169,22 @@ describe('ge-bridge-cli acp', () => {
     const img = done[1].content.find((c) => c.content.type === 'image');
     assert.equal(img.content.mimeType, 'image/png');
     assert.match(done[1].content[0].content.text, /Saved to generated-images/);
+
+    assert.equal(last.images.length, 1);
+    assert.match(last.images[0], /^data:image\/png;base64,/);
+    await finish();
+  });
+
+  it('forwards images in the prompt to Gemini', async () => {
+    acp = start();
+    await acp.request('initialize', { protocolVersion: 1 });
+    const sid = await newSession(acp, tmp());
+    const r = await acp.request('session/prompt', {
+      sessionId: sid,
+      prompt: [{ type: 'text', text: 'what is this' }, { type: 'image', mimeType: 'image/png', data: FAKE_PNG_B64 }],
+    });
+    assert.equal(r.result.stopReason, 'end_turn', JSON.stringify(r));
+    assert.deepEqual(s.ext.runTurns.at(-1).images, ['data:image/png;base64,' + FAKE_PNG_B64]);
     await finish();
   });
 

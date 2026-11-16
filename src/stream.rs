@@ -72,6 +72,22 @@ pub fn parse_openai_messages(messages: &[Value]) -> Vec<NormalizedMessage> {
     out
 }
 
+/// An Anthropic `image` block as the string the extension pastes: a base64 source becomes a data URL,
+/// a URL source is kept as is so the server can reject it.
+fn anthropic_image(b: &Value) -> Option<String> {
+    if let Some(u) = b.pointer("/source/url").and_then(|v| v.as_str()) {
+        return Some(u.to_string());
+    }
+    let media = b.pointer("/source/media_type").and_then(|v| v.as_str())?;
+    let data = b.pointer("/source/data").and_then(|v| v.as_str())?;
+    Some(format!("data:{media};base64,{data}"))
+}
+
+/// True for the only image form the extension can paste: `data:image/...;base64,...`.
+pub fn is_base64_image(u: &str) -> bool {
+    u.strip_prefix("data:image/").is_some_and(|r| r.split_once(',').is_some_and(|(h, _)| h.ends_with(";base64")))
+}
+
 pub fn parse_anthropic_messages(system: Option<&Value>, messages: &[Value]) -> Vec<NormalizedMessage> {
     let mut out = Vec::new();
     if let Some(sys) = system {
@@ -112,14 +128,7 @@ pub fn parse_anthropic_messages(system: Option<&Value>, messages: &[Value]) -> V
                                 texts.push(t.to_string());
                             }
                         }
-                        Some("image") => {
-                            if let (Some(media), Some(data)) = (
-                                b.pointer("/source/media_type").and_then(|v| v.as_str()),
-                                b.pointer("/source/data").and_then(|v| v.as_str()),
-                            ) {
-                                images.push(format!("data:{media};base64,{data}"));
-                            }
-                        }
+                        Some("image") => images.extend(anthropic_image(b)),
                         Some("tool_use") => {
                             let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("toolu_0").to_string();
                             let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -132,15 +141,29 @@ pub fn parse_anthropic_messages(system: Option<&Value>, messages: &[Value]) -> V
                         }
                         Some("tool_result") => {
                             let id = b.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
+                            let mut tr_images = Vec::new();
                             let content_str = match b.get("content") {
                                 Some(Value::String(s)) => s.clone(),
+                                Some(Value::Array(parts)) => {
+                                    let mut tr_texts = Vec::new();
+                                    for p in parts {
+                                        match p.get("type").and_then(|v| v.as_str()) {
+                                            Some("text") => {
+                                                tr_texts.extend(p.get("text").and_then(|v| v.as_str()).map(String::from))
+                                            }
+                                            Some("image") => tr_images.extend(anthropic_image(p)),
+                                            _ => {}
+                                        }
+                                    }
+                                    tr_texts.join("\n")
+                                }
                                 Some(other) => other.to_string(),
                                 None => String::new(),
                             };
                             out.push(NormalizedMessage {
                                 role: "tool".into(),
                                 text: content_str,
-                                images: vec![],
+                                images: tr_images,
                                 tool_calls: vec![],
                                 tool_call_id: Some(id.to_string()),
                                 tool_name: None,
@@ -374,6 +397,15 @@ fn active_objective(messages: &[NormalizedMessage]) -> Option<String> {
     ))
 }
 
+/// Index of the first message after the last assistant reply (the current turn).
+fn turn_start(messages: &[NormalizedMessage]) -> usize {
+    let mut start = messages.len().saturating_sub(1);
+    while start > 0 && messages[start - 1].role != "assistant" {
+        start -= 1;
+    }
+    start
+}
+
 pub fn render_turn_prompt(
     messages: &[NormalizedMessage],
     tools: Option<&[Value]>,
@@ -396,8 +428,11 @@ pub fn render_turn_prompt(
 
     if new_chat {
         let single_user = messages.len() == 1 && messages[0].role == "user" && tools.is_none();
+        let start = turn_start(messages);
         for (i, m) in messages.iter().enumerate() {
-            images.extend(m.images.clone());
+            if i >= start {
+                images.extend(m.images.clone());
+            }
             match m.role.as_str() {
                 "system" => blocks.push(format!("[SYSTEM INSTRUCTIONS]\n{}", m.text)),
                 "user" if single_user => blocks.push(m.text.clone()),
@@ -413,13 +448,15 @@ pub fn render_turn_prompt(
                 "tool" => blocks.push(render_tool_result(m, recent.contains(&i))),
                 _ => blocks.push(m.text.clone()),
             }
+            if i < start && !m.images.is_empty() {
+                if let Some(last) = blocks.last_mut() {
+                    last.push_str("\n(earlier image not re-sent)");
+                }
+            }
         }
     } else {
         // Continuation delta: only send messages appended after the last assistant reply
-        let mut start = messages.len().saturating_sub(1);
-        while start > 0 && messages[start - 1].role != "assistant" {
-            start -= 1;
-        }
+        let start = turn_start(messages);
         for (i, m) in messages.iter().enumerate().skip(start) {
             images.extend(m.images.clone());
             if m.role == "tool" {
@@ -920,8 +957,31 @@ mod tests {
         let msgs = vec![old, msg("assistant", "a"), new];
         let (_, imgs) = render_turn_prompt(&msgs, None, false, false);
         assert_eq!(imgs, vec!["data:new".to_string()]);
-        let (_, imgs) = render_turn_prompt(&msgs, None, true, false);
-        assert_eq!(imgs.len(), 2);
+        let (p, imgs) = render_turn_prompt(&msgs, None, true, false);
+        assert_eq!(imgs, vec!["data:new".to_string()]);
+        assert!(p.contains("old\n(earlier image not re-sent)"), "{p}");
+    }
+
+    #[test]
+    fn anthropic_tool_result_array_joins_text_and_takes_images() {
+        let msgs = vec![json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[
+            {"type":"text","text":"a"},
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}},
+            {"type":"text","text":"b"}]}]})];
+        let out = parse_anthropic_messages(None, &msgs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].role, "tool");
+        assert_eq!(out[0].text, "a\nb");
+        assert_eq!(out[0].images, vec!["data:image/png;base64,QUJD".to_string()]);
+    }
+
+    #[test]
+    fn url_images_are_kept_and_detected() {
+        let msgs = vec![json!({"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://x/y.png"}}]})];
+        let out = parse_anthropic_messages(None, &msgs);
+        assert_eq!(out[0].images, vec!["https://x/y.png".to_string()]);
+        assert!(!is_base64_image("https://x/y.png"));
+        assert!(is_base64_image("data:image/png;base64,QUJD"));
     }
 
     #[test]
