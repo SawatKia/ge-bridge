@@ -2,10 +2,10 @@
 //! It talks to the local server over HTTP with the stored pairing token; it never starts the server.
 
 use base64::Engine;
+use ge_bridge::http_client::{self, SendError};
 use ge_bridge::{config, logview, omb, state};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -46,23 +46,17 @@ struct Reply {
 
 impl Client {
     fn new() -> Self {
-        config::init(config::RuntimeConfig::from_env());
-        Self { port: state::PersistedPrefs::load().port, token: state::load_or_create_token() }
+        let (port, token) = http_client::local_endpoint();
+        Self { port, token }
     }
 
     /// Minimal HTTP/1.0 client: the server answers with a plain body and closes, so no chunking.
     fn call(&self, method: &str, path: &str, body: Option<&Value>, timeout_secs: u64) -> Result<Reply, String> {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port))
-            .map_err(|e| format!("ge-bridge is not running on 127.0.0.1:{} ({e})", self.port))?;
-        stream.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok();
-        let payload = body.map(Value::to_string).unwrap_or_default();
-        let req = format!(
-            "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
-            self.port,
-            self.token,
-            payload.len()
-        );
-        stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+        let mut stream = http_client::send(self.port, &self.token, method, path, body, Duration::from_secs(timeout_secs))
+            .map_err(|e| match e {
+                SendError::Connect(e) => format!("ge-bridge is not running on 127.0.0.1:{} ({e})", self.port),
+                SendError::Write(e) => e.to_string(),
+            })?;
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).map_err(|e| format!("no answer from ge-bridge: {e}"))?;
         let text = String::from_utf8_lossy(&raw);
