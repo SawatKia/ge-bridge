@@ -1158,4 +1158,140 @@ draw a cat";
         assert_eq!(m[3].tool_call_id.as_deref(), Some("tu1"));
         assert_eq!(m[3].text, "res");
     }
+
+    fn snap_msg(role: &str, text: &str, images: &[&str]) -> NormalizedMessage {
+        NormalizedMessage {
+            role: role.into(),
+            text: text.into(),
+            images: images.iter().map(|s| s.to_string()).collect(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            tool_name: None,
+        }
+    }
+
+    fn snap_asst(text: &str, id: &str, name: &str, args: &str) -> NormalizedMessage {
+        let mut m = snap_msg("assistant", text, &[]);
+        m.tool_calls.push(ParsedToolCall { id: id.into(), name: name.into(), arguments_json: args.into() });
+        m
+    }
+
+    fn snap_tool(id: &str, name: &str, text: &str) -> NormalizedMessage {
+        let mut m = snap_msg("tool", text, &[]);
+        m.tool_call_id = Some(id.into());
+        m.tool_name = Some(name.into());
+        m
+    }
+
+    fn snap_tools() -> Vec<Value> {
+        vec![json!({"type":"function","function":{"name":"get_weather","description":"Get the weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}})]
+    }
+
+    const SNAP_ROLE: &str = "[ROLE]\nYou are the language-model backend of an AI agent app running on the user's computer. The app runs tools for you (files, commands, web, images, messages and more) and sends you their results. Never say you cannot do something because you are a chat or text-only model: when a tool can do it, call the tool. Follow the system instructions and reply in the user's language.\n[/ROLE]";
+    const SNAP_PROTOCOL: &str = "[AGENT_TOOL_PROTOCOL]\nYou have access to external tools. Whenever you want to execute a tool, output ONLY raw <tool_call> tags (never inside markdown code fences) formatted as single-line JSON:\n<tool_call>{\"name\":\"tool_name\",\"arguments\":{\"key\":\"value\"}}</tool_call>\nWait for [TOOL_RESULT] before continuing.\nTools Schema: [{\"description\":\"Get the weather for a city.\",\"name\":\"get_weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"}}]\n[/AGENT_TOOL_PROTOCOL]";
+    const SNAP_RULES: &str = "[OUTPUT_RULES]\nRespond with exactly one of:\n1. One or more tool calls, each as raw <tool_call>{\"name\":\"tool_name\",\"arguments\":{...}}</tool_call> (not in a code fence)\n2. A plain-text final answer, only when no tool applies.\nNever invent tool results: real results arrive as [TOOL_RESULT] in the next turn.\n[/OUTPUT_RULES]";
+    const SNAP_OBJECTIVE: &str = "[ACTIVE OBJECTIVE]\nThe user request being served: \"Weather in Bangkok?\"\nUse the tool results above only to serve this request. When it is done, answer it directly; do not repeat earlier reports.\n[/ACTIVE OBJECTIVE]";
+
+    // render_turn_prompt generates no time or ids, so every snapshot below is fully deterministic.
+
+    #[test]
+    fn prompt_snapshot_text_only() {
+        let (p, imgs) = render_turn_prompt(&[snap_msg("user", "Hello there", &[])], None, true, false);
+        assert_eq!(p, "Hello there");
+        assert!(imgs.is_empty());
+
+        let (p, _) = render_turn_prompt(&[snap_msg("system", "Be brief.", &[]), snap_msg("user", "Hello there", &[])], None, true, false);
+        assert_eq!(p, "[SYSTEM INSTRUCTIONS]\nBe brief.\n\n[USER]\nHello there");
+    }
+
+    #[test]
+    fn prompt_snapshot_with_tools() {
+        let tools = snap_tools();
+        let msgs = [snap_msg("system", "Be brief.", &[]), snap_msg("user", "Weather in Bangkok?", &[])];
+        let (p, imgs) = render_turn_prompt(&msgs, Some(&tools), true, true);
+        let want = format!("{SNAP_ROLE}\n\n{SNAP_PROTOCOL}\n\n[SYSTEM INSTRUCTIONS]\nBe brief.\n\n[USER]\nWeather in Bangkok?\n\n{SNAP_RULES}");
+        assert_eq!(p, want);
+        assert!(imgs.is_empty());
+    }
+
+    #[test]
+    fn prompt_snapshot_continuation() {
+        let tools = snap_tools();
+        let hist = vec![
+            snap_msg("user", "Weather in Bangkok?", &[]),
+            snap_asst("Checking.", "call_1", "get_weather", r#"{"city":"Bangkok"}"#),
+            snap_tool("call_1", "get_weather", "32C sunny"),
+        ];
+        // Continuation: only the delta after the last assistant reply, no role/protocol blocks.
+        let (p, imgs) = render_turn_prompt(&hist, Some(&tools), false, false);
+        assert_eq!(p, format!("[TOOL_RESULT id=\"call_1\"]\n32C sunny\n\n{SNAP_OBJECTIVE}\n\n{SNAP_RULES}"));
+        assert!(imgs.is_empty());
+
+        // The same history rendered as a new chat includes everything.
+        let (p, _) = render_turn_prompt(&hist, Some(&tools), true, true);
+        let want = format!(
+            "{SNAP_ROLE}\n\n{SNAP_PROTOCOL}\n\n[USER]\nWeather in Bangkok?\n\n[ASSISTANT]\nChecking.\n<tool_call>{{\"name\":\"get_weather\",\"arguments\":{{\"city\":\"Bangkok\"}}}}</tool_call>\n\n[TOOL_RESULT id=\"call_1\"]\n32C sunny\n\n{SNAP_OBJECTIVE}\n\n{SNAP_RULES}"
+        );
+        assert_eq!(p, want);
+    }
+
+    #[test]
+    fn prompt_snapshot_with_images() {
+        let hist = vec![
+            snap_msg("user", "first", &["data:image/png;base64,OLD"]),
+            snap_msg("assistant", "seen", &[]),
+            snap_msg("user", "second", &["data:image/png;base64,NEW"]),
+        ];
+        let (p, imgs) = render_turn_prompt(&hist, None, true, false);
+        assert_eq!(p, "[USER]\nfirst\n(earlier image not re-sent)\n\n[ASSISTANT]\nseen\n\n[USER]\nsecond");
+        assert_eq!(imgs, vec!["data:image/png;base64,NEW".to_string()]);
+
+        let (p, imgs) = render_turn_prompt(&hist, None, false, false);
+        assert_eq!(p, "second");
+        assert_eq!(imgs, vec!["data:image/png;base64,NEW".to_string()]);
+    }
+
+    #[test]
+    fn prompt_snapshot_omb_wrapped() {
+        let tools = snap_tools();
+        let omb = "Context from OpenMausBot updated since this conversation started; it replaces any earlier copy:\nTime: 17:50\n\nWeather in Bangkok?";
+        let hist = vec![
+            snap_msg("user", "[end of recalled passages]\nold\n[end of recalled passages: 1]\nhi", &[]),
+            snap_msg("user", omb, &[]),
+            snap_msg("user", "[From OpenMausBot: scheduled ping]", &[]),
+            snap_tool("c1", "get_weather", "ok"),
+        ];
+        // The objective skips the "[From OpenMausBot" meta message and strips the context block of the
+        // previous one, leaving only the user's own words.
+        let (p, _) = render_turn_prompt(&hist, Some(&tools), true, true);
+        let want = format!(
+            "{SNAP_ROLE}\n\n{SNAP_PROTOCOL}\n\n[USER]\n[end of recalled passages]\nold\n[end of recalled passages: 1]\nhi\n\n[USER]\n{omb}\n\n[USER]\n[From OpenMausBot: scheduled ping]\n\n[TOOL_RESULT id=\"c1\"]\nok\n\n{SNAP_OBJECTIVE}\n\n{SNAP_RULES}"
+        );
+        assert_eq!(p, want);
+    }
+
+    #[test]
+    fn prompt_snapshot_omb_tool_bridge_hint() {
+        let tools = vec![
+            json!({"type":"function","function":{"name":"omb_find_tool","description":"Find a tool. Tools reached this way: generate_image, trigger, send_message.","parameters":{"type":"object"}}}),
+            json!({"type":"function","function":{"name":"omb_use_tool","description":"Run a tool.","parameters":{"type":"object"}}}),
+        ];
+        let (p, _) = render_turn_prompt(&[snap_msg("user", "[From OpenMausBot: ping]", &[])], Some(&tools), false, false);
+        let want = concat!(
+            "[From OpenMausBot: ping]\n\n",
+            "[OUTPUT_RULES]\nRespond with exactly one of:\n",
+            "1. One or more tool calls, each as raw <tool_call>{\"name\":\"tool_name\",\"arguments\":{...}}</tool_call> (not in a code fence)\n",
+            "2. A plain-text final answer, only when no tool applies.\n",
+            "Never invent tool results: real results arrive as [TOOL_RESULT] in the next turn.\n",
+            "HIDDEN TOOLS: these tools are not in the schema above but you can run them: generate_image, trigger, send_message. ",
+            "Run one directly with <tool_call>{\"name\":\"omb_use_tool\",\"arguments\":{\"name\":\"<tool name>\",\"arguments\":{...}}}</tool_call>; ",
+            "call omb_find_tool first only when you need its exact input schema. ",
+            "Never tell the user you cannot do something one of these tools does. ",
+            "When the user asks for an image, picture, photo, drawing or illustration, do not reply with a prompt or a description: ",
+            "call <tool_call>{\"name\":\"omb_use_tool\",\"arguments\":{\"name\":\"generate_image\",\"arguments\":{\"prompt\":\"<concrete visual description in English>\",\"aspect\":\"1:1\"}}}</tool_call> ",
+            "(aspect is 1:1, 16:9 or 9:16); the image is attached to your reply automatically.\n",
+            "[/OUTPUT_RULES]"
+        );
+        assert_eq!(p, want);
+    }
 }
