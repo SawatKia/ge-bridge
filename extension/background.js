@@ -335,9 +335,16 @@ async function handleRunTurn(rawMsg) {
     requestedModel: rawMsg.targetModel || null, model: msg.targetModel, requestedEffort: msg.reasoningEffort || null
   });
 
-  if (hasImages && transport === 'dom') log.warn('RUN_TURN has images but transport is dom: typing cannot attach them', { jobId: msg.jobId });
   if (!target && transport !== 'dom') log.warn('RUN_TURN: no Gemini target known, using dom', { jobId: msg.jobId });
   const order = GeBridgeLib.transportOrder(transport, { kind: 'turn', hasImages, hasTarget: Boolean(target) });
+  if (hasImages && !order.length) {
+    const why = target
+      ? 'The DOM transport cannot attach images. Switch the extension transport to auto (or an API mode) and retry.'
+      : 'No Gemini target is known, so images cannot be attached. Open a Gemini Enterprise tab (signed in) and use the auto or API transport.';
+    log.error('RUN_TURN refused: images need an API transport', { jobId: msg.jobId, transport, hasTarget: Boolean(target), images: msg.images.length });
+    wsSend({ type: 'TURN_DONE', jobId: msg.jobId, error: why });
+    return;
+  }
   const failures = [];
 
   const lane = msg.tabId;
@@ -360,7 +367,7 @@ async function handleRunTurn(rawMsg) {
       notePacingAnswer(msg.jobId, out.text);
       return;
     } catch (err) {
-      failures.push({ mode, message: err.message, httpStatus: err.httpStatus });
+      failures.push({ mode, message: err.message, httpStatus: err.httpStatus, step: err.step });
       log.error('RUN_TURN attempt failed', {
         jobId: msg.jobId, mode, step: err.step, httpStatus: err.httpStatus, network: Boolean(err.network),
         started: progress.started, error: err.message

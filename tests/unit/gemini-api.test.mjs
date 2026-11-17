@@ -227,6 +227,19 @@ test('runApiTurn uploads attachments into the session and sends their fileIds', 
   assert.ok(!('toolsSpec' in req), 'attachments do not turn the image tool on');
 });
 
+test('addContextFile failures carry step upload', async () => {
+  const h = harness({ stream: () => res(200, '[]') });
+  await assert.rejects(() => h.client.addContextFile(SESSION, 'not-a-data-url', 'image-1.png'), (e) => e.step === 'upload');
+  const noId = lib.createGeminiClient({
+    target, origin: ORIGIN,
+    fetch: async (url) => (url.includes('/auth/getoxsrf')
+      ? res(200, `)]}'
+${JSON.stringify({ xsrfToken: XSRF, keyId: 'k' })}`)
+      : res(200, {}))
+  });
+  await assert.rejects(() => noId.addContextFile(SESSION, 'data:image/png;base64,QUJD', 'image-1.png'), (e) => e.step === 'upload');
+});
+
 test('runApiTurn without attachments uploads nothing and sends empty fileIds', async () => {
   const h = harness({ stream: () => res(200, JSON.stringify([obj('ok')])) });
   await lib.runApiTurn(h.client, SESSION, 'q');

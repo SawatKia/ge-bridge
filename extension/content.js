@@ -361,22 +361,6 @@
     };
   }
 
-  async function pasteBase64Images(composer, images) {
-    for (const dataUrl of images) {
-      const m = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-      if (!m) continue;
-      const bin = atob(m[2]);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const file = new File([bytes], `maus_screen.${m[1].split('/')[1] || 'png'}`, { type: m[1] });
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      composer.focus();
-      composer.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true, composed: true }));
-      await sleep(320);
-    }
-  }
-
   function fillComposer(composer, text) {
     composer.focus();
     if (composer.tagName === 'TEXTAREA') {
@@ -418,7 +402,6 @@
       const beforeCount = beforeBlocks.length;
       const beforeLast = beforeCount ? extractThoughtAndAnswer(beforeBlocks[beforeCount - 1]).answer : '';
 
-      if (job.images?.length) await pasteBase64Images(composer, job.images);
       fillComposer(composer, job.prompt);
       await sleep(140);
 

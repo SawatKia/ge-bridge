@@ -58,6 +58,7 @@ pub async fn run_http_server(state: Arc<AppState>) -> Result<(), String> {
         .route("/v1/images/generations", post(openai_image_generations))
         .route("/images/generations", post(openai_image_generations))
         .fallback(cors_preflight_or_404)
+        .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -136,14 +137,31 @@ fn json_error(status: StatusCode, msg: &str) -> Response {
         .into_response()
 }
 
-/// A 400 when any image is not a base64 data URL: the extension would silently skip it.
+const ALLOWED_IMAGE_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// Why an image is unusable, or None when it is a base64 data URL of an allowed type and size.
+fn image_problem(u: &str) -> Option<String> {
+    if !is_base64_image(u) {
+        return Some("Image URLs are not supported; send the image as base64 (a data: URL or a base64 source)".into());
+    }
+    let (head, payload) = u.strip_prefix("data:")?.split_once(',')?;
+    let mime = head.split(';').next().unwrap_or("").to_ascii_lowercase();
+    if !ALLOWED_IMAGE_MIMES.contains(&mime.as_str()) {
+        return Some(format!("Unsupported image type {mime}; allowed: {}", ALLOWED_IMAGE_MIMES.join(", ")));
+    }
+    let decoded = payload.len() * 3 / 4;
+    (decoded > IMAGE_MAX_BYTES).then(|| format!("Image is too large ({decoded} bytes decoded); the limit is {IMAGE_MAX_BYTES} bytes (10 MB)"))
+}
+
+/// A 400 when any image is not a base64 data URL (the extension would silently skip it), has a
+/// type outside the allowed list, or decodes to more than 10 MB.
 fn reject_non_base64_images(messages: &[NormalizedMessage]) -> Option<Response> {
-    messages.iter().flat_map(|m| &m.images).any(|u| !is_base64_image(u)).then(|| {
-        json_error(
-            StatusCode::BAD_REQUEST,
-            "Image URLs are not supported; send the image as base64 (a data: URL or a base64 source)",
-        )
-    })
+    messages
+        .iter()
+        .flat_map(|m| &m.images)
+        .find_map(|u| image_problem(u))
+        .map(|msg| json_error(StatusCode::BAD_REQUEST, &msg))
 }
 
 async fn cors_preflight_or_404(method: Method, headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
@@ -1364,6 +1382,20 @@ mod tests {
             h.insert(*k, HeaderValue::from_str(v).unwrap());
         }
         h
+    }
+
+    #[test]
+    fn image_rules() {
+        let img = |mime: &str, n: usize| format!("data:{mime};base64,{}", "A".repeat(n));
+        for m in ["image/png", "image/jpeg", "image/webp", "image/gif"] {
+            assert!(image_problem(&img(m, 8)).is_none(), "{m}");
+        }
+        let svg = image_problem(&img("image/svg+xml", 8)).unwrap();
+        assert!(svg.contains("image/svg+xml") && svg.contains("image/png"), "{svg}");
+        // 13981014 base64 chars decode to exactly 10 MiB; one more char is over.
+        assert!(image_problem(&img("image/png", 13_981_014)).is_none());
+        assert!(image_problem(&img("image/png", 13_981_015)).unwrap().contains("too large"));
+        assert!(image_problem("https://example.com/a.png").unwrap().contains("not supported"));
     }
 
     #[test]

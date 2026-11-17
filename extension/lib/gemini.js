@@ -541,8 +541,8 @@ var GeBridgeLib = globalThis.GeBridgeLib || (() => {
 
   function transportOrder(transport, { kind = 'turn', hasImages = false, hasTarget = true } = {}) {
     if (kind === 'image') return transport === 'api-tab' || transport === 'api-sw' ? [transport] : ['api-tab', 'api-sw'];
-    if (transport === 'dom' || !hasTarget) return ['dom'];
-    // Typing into the page cannot attach files, so a turn with images has no DOM fallback.
+    // Typing into the page cannot attach files: a turn with images that would only have DOM gets no transport.
+    if (transport === 'dom' || !hasTarget) return hasImages ? [] : ['dom'];
     if (transport === 'auto') return hasImages ? ['api-tab', 'api-sw'] : ['api-tab', 'api-sw', 'dom'];
     return [transport];
   }
@@ -551,8 +551,10 @@ var GeBridgeLib = globalThis.GeBridgeLib || (() => {
   // failures: [{ mode, message, httpStatus }]
   function transportFailureMessage(failures, what = 'Turn') {
     if (!failures.length) return `${what} failed`;
-    if (failures.length === 1) return failures[0].message || `${what} failed`;
-    const reason = (f) => (f.httpStatus ? `HTTP ${f.httpStatus}` : String(f.message || 'failed').split(/\r?\n/)[0].slice(0, 120));
+    // An upload step is named so it reads as an image upload failure.
+    const stepped = (f, text) => (f.step === 'upload' ? `image upload failed: ${text}` : text);
+    if (failures.length === 1) return stepped(failures[0], failures[0].message || `${what} failed`);
+    const reason = (f) => stepped(f, f.httpStatus ? `HTTP ${f.httpStatus}` : String(f.message || 'failed').split(/\r?\n/)[0].slice(0, 120));
     const parts = failures.map((f) => `${TRANSPORT_LABELS[f.mode] || f.mode}: ${reason(f)}`);
     const noTab = failures.some((f) => /no scriptable gemini tab/i.test(f.message || ''));
     return `${what} failed on every way to reach Gemini (${parts.join('; ')}).`
