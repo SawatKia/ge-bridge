@@ -1,5 +1,6 @@
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use crate::omb::{hidden_tools_hint, tool_bridge};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,36 +278,12 @@ pub fn output_rules(tools: &[Value]) -> String {
     s
 }
 
-fn tool_name(t: &Value) -> Option<&str> {
+pub(crate) fn tool_name(t: &Value) -> Option<&str> {
     t.pointer("/function/name").or_else(|| t.get("name")).and_then(Value::as_str)
 }
 
-fn tool_description(t: &Value) -> Option<&str> {
+pub(crate) fn tool_description(t: &Value) -> Option<&str> {
     t.pointer("/function/description").or_else(|| t.get("description")).and_then(Value::as_str)
-}
-
-/// OpenMausBot's tool bridge in one request: the find/use tool names and the hidden tools' names as listed.
-pub struct Bridge<'a> {
-    pub find_name: &'a str,
-    pub use_name: String,
-    /// "trigger, generate_image, … and 12 more"
-    pub names: &'a str,
-}
-
-pub fn tool_bridge(tools: &[Value]) -> Option<Bridge<'_>> {
-    let find = tools.iter().find(|t| tool_name(t).is_some_and(|n| n.ends_with("find_tool")))?;
-    let find_name = tool_name(find)?;
-    let use_name = format!("{}use_tool", find_name.strip_suffix("find_tool")?);
-    if !tools.iter().any(|t| tool_name(t) == Some(use_name.as_str())) {
-        return None;
-    }
-    const MARKER: &str = "Tools reached this way: ";
-    let desc = tool_description(find)?;
-    let names = desc[desc.find(MARKER)? + MARKER.len()..].trim().trim_end_matches('.').trim();
-    if names.is_empty() || names == "none" {
-        return None;
-    }
-    Some(Bridge { find_name, use_name, names })
 }
 
 /// How this request's agent makes images: a listed tool whose name ends in `generate_image`, or
@@ -335,28 +312,6 @@ pub fn image_tool_call(tool: &ImageTool, prompt: &str, aspect: &str) -> String {
         }
     };
     format!("<tool_call>{call}</tool_call>")
-}
-
-/// OpenMausBot's tool bridge (switched on for models it thinks run locally, which includes ge-bridge on
-/// 127.0.0.1) lists only a few tools plus `<prefix>find_tool` and `<prefix>use_tool`; the rest, including
-/// `generate_image`, are only named in find_tool's description. Gemini tends to answer in text instead of
-/// searching, so spell out that the hidden tools exist and can be run through use_tool right away.
-pub fn hidden_tools_hint(tools: &[Value]) -> Option<String> {
-    let Bridge { find_name, use_name, names } = tool_bridge(tools)?;
-    let mut hint = format!(
-        "HIDDEN TOOLS: these tools are not in the schema above but you can run them: {names}. \
-         Run one directly with <tool_call>{{\"name\":\"{use_name}\",\"arguments\":{{\"name\":\"<tool name>\",\"arguments\":{{...}}}}}}</tool_call>; \
-         call {find_name} first only when you need its exact input schema. \
-         Never tell the user you cannot do something one of these tools does."
-    );
-    if names.split(", ").any(|n| n == "generate_image") {
-        hint.push_str(&format!(
-            " When the user asks for an image, picture, photo, drawing or illustration, do not reply with a prompt or a description: \
-             call <tool_call>{{\"name\":\"{use_name}\",\"arguments\":{{\"name\":\"generate_image\",\"arguments\":{{\"prompt\":\"<concrete visual description in English>\",\"aspect\":\"1:1\"}}}}}}</tool_call> \
-             (aspect is 1:1, 16:9 or 9:16); the image is attached to your reply automatically."
-        ));
-    }
-    Some(hint)
 }
 
 fn render_tool_call(tc: &ParsedToolCall) -> String {
@@ -388,7 +343,7 @@ fn active_objective(messages: &[NormalizedMessage]) -> Option<String> {
         .rev()
         .filter(|m| m.role == "user")
         .map(|m| crate::recovery::user_request_text(&m.text).0)
-        .find(|t| !t.is_empty() && !t.starts_with("[From OpenMausBot"))?;
+        .find(|t| !t.is_empty() && !crate::omb::is_omb_meta(t))?;
     Some(format!(
         "[ACTIVE OBJECTIVE]\nThe user request being served: \"{}\"\n\
          Use the tool results above only to serve this request. When it is done, answer it directly; do not repeat earlier reports.\n\

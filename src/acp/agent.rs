@@ -5,7 +5,7 @@ use super::mcp::{self, McpHub};
 use super::rpc::{CallError, Rpc, RpcError};
 use super::tools::LocalTools;
 use super::types::{Risk, ToolOutcome};
-use crate::bot_images::{self, RecentImage};
+use crate::omb::disk::{self as bot_images, RecentImage};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -293,7 +293,7 @@ impl Agent {
         s.cancel.store(false, Ordering::Relaxed);
         let (prompt_text, mut images) = blocks_to_text_and_images(&params["prompt"]);
         let (context, text) = split_bot_context(&prompt_text);
-        images.extend(attached_images(crate::recovery::after_recalled_passages(&text)));
+        images.extend(attached_images(crate::omb::after_recalled_passages(&text)));
         if context.is_some() {
             *s.bot_context.lock() = context;
         }

@@ -4,7 +4,6 @@ mod supervisor;
 
 use anthropic::anthropic_messages;
 use openai::{openai_chat_completions, openai_image_generations, openai_list_models};
-use crate::integrations;
 use crate::state::{AppState, DomStreamEvent, ModelInfo, TabState};
 use crate::stream::{is_base64_image, NormalizedMessage};
 use axum::{
@@ -410,7 +409,7 @@ async fn api_link_openmausbot(headers: HeaderMap, State(state): State<Arc<AppSta
         return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
     }
     let prefs = state.prefs.read().clone();
-    match integrations::link_openmausbot(prefs.port, &state.token, &prefs.default_model, prefs.enable_tools_default) {
+    match crate::omb::link::link_openmausbot(prefs.port, &state.token, &prefs.default_model, prefs.enable_tools_default) {
         Ok(linked) => {
             state.log("info", format!("Auto-linked OpenMausBot at {} (image generation: {})", linked.path.display(), linked.image_gen));
             Json(json!({ "ok": true, "path": linked.path.display().to_string(), "imageGen": linked.image_gen, "movedBots": linked.moved_bots })).into_response()

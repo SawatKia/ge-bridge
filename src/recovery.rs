@@ -127,54 +127,31 @@ pub fn refusal_kind(text: &str, has_tools: bool) -> Option<Refusal> {
     None
 }
 
-/// Notes OpenMausBot writes into user messages that are not the user's words: the context block it puts
-/// in front of a message (`withContextNote` in its prompt-split driver) and its automatic retry notes.
-const OMB_CONTEXT_PREFIXES: &[&str] = &[
-    "Context from OpenMausBot updated since this conversation started",
-    "The OpenMausBot context notes from earlier in this conversation have been cleared",
-];
-const OMB_META_PREFIX: &str = "[From OpenMausBot";
-const OMB_TIME_LINE: &str = "Current time when this message was sent:";
-
 /// The user's own words in a user message: an OpenMausBot context block in front is dropped (the block's
 /// end is unknown, so the request is taken to be the last paragraph). The second value is the full
 /// message when a block was dropped, for callers that want to show it with a warning.
 pub fn user_request_text(text: &str) -> (&str, Option<&str>) {
     let full = text.trim();
     // Passages OpenMausBot recalls from earlier chats sit in front of the message; they are not the request.
-    let t = after_recalled_passages(full).trim();
+    let t = crate::omb::after_recalled_passages(full).trim();
     if t.len() != full.len() {
         let (req, _) = user_request_text(t);
         return (req, Some(full));
     }
     // OpenMausBot's ACP prompts carry the bot persona and instructions in front of the user's words, ending with
     // this line; a persona that talks about images must not make "สร้างไฟล์ hello.txt" a picture request.
-    if let Some(at) = t.rfind(OMB_TIME_LINE) {
+    if let Some(at) = t.rfind(crate::omb::OMB_TIME_LINE) {
         let after = t[at..].find('\n').map(|i| t[at + i..].trim()).unwrap_or("");
         if !after.is_empty() {
             return (after, Some(t));
         }
     }
-    if !OMB_CONTEXT_PREFIXES.iter().any(|p| t.starts_with(p)) {
+    if !crate::omb::OMB_CONTEXT_PREFIXES.iter().any(|p| t.starts_with(p)) {
         return (t, None);
     }
     let last = t.rsplit("\n\n").map(str::trim).find(|p| !p.is_empty()).unwrap_or("");
-    let is_prefix_only = OMB_CONTEXT_PREFIXES.iter().any(|p| last.starts_with(p));
+    let is_prefix_only = crate::omb::OMB_CONTEXT_PREFIXES.iter().any(|p| last.starts_with(p));
     (if is_prefix_only { "" } else { last }, Some(t))
-}
-
-const OMB_RECALL_END: &str = "[end of recalled passages";
-
-/// The part of an OpenMausBot message after its recalled-passages block (the whole text when it has none).
-pub fn after_recalled_passages(text: &str) -> &str {
-    match text.rfind(OMB_RECALL_END) {
-        Some(at) => text[at..].find('\n').map_or("", |i| &text[at + i..]),
-        None => text,
-    }
-}
-
-fn is_omb_meta(text: &str) -> bool {
-    text.trim_start().starts_with(OMB_META_PREFIX)
 }
 
 /// "16:9" or "9:16" only when the request names an orientation; "portrait lens", "wide-angle" and
@@ -207,7 +184,7 @@ const WRITER_REQUEST_MAX_CHARS: usize = 4_000;
 pub fn prompt_writer_prompt(turns: &[(&str, &str)]) -> String {
     let convo: Vec<(&str, &str)> = turns
         .iter()
-        .filter(|(r, t)| (*r == "user" || *r == "assistant") && !t.trim().is_empty() && !is_omb_meta(t))
+        .filter(|(r, t)| (*r == "user" || *r == "assistant") && !t.trim().is_empty() && !crate::omb::is_omb_meta(t))
         .copied()
         .collect();
     let last_user = convo.iter().rposition(|(r, _)| *r == "user");
@@ -371,7 +348,7 @@ Time: 17:50
     fn user_request_text_drops_recalled_passages() {
         let t = "[1] chat \"x\": but now some characters shows as unreadable\n[end of recalled passages — the message follows]\n\nwhat is in this image?";
         assert_eq!(user_request_text(t), ("what is in this image?", Some(t)));
-        assert_eq!(after_recalled_passages("no marker"), "no marker");
+        assert_eq!(crate::omb::after_recalled_passages("no marker"), "no marker");
     }
 
     #[test]

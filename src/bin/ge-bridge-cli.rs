@@ -2,7 +2,7 @@
 //! It talks to the local server over HTTP with the stored pairing token; it never starts the server.
 
 use base64::Engine;
-use ge_bridge::{config, integrations, logview, state};
+use ge_bridge::{config, logview, omb, state};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -147,13 +147,13 @@ fn cmd_doctor(c: &Client) -> bool {
     match maus.as_ref().filter(|p| p.exists()).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
         None => println!("  · OpenMausBot not found (skip)"),
         Some(cfg) => {
-            let cli = cfg["instances"][integrations::ACP_INSTANCE]["config"]["cli"].as_str().unwrap_or("");
+            let cli = cfg["instances"][omb::link::ACP_INSTANCE]["config"]["cli"].as_str().unwrap_or("");
             let exe = cli.trim_start_matches('"').split(".exe").next().map(|p| format!("{p}.exe")).unwrap_or_default();
             check(!cli.is_empty() && std::path::Path::new(&exe).exists(),
                 format!("OpenMausBot ACP engine runs {cli}"),
                 "OpenMausBot ACP engine missing or its exe moved: run `ge-bridge-cli link-openmausbot`, then restart OpenMausBot".into());
-            if cfg["instances"].get(integrations::OLD_INSTANCE).is_some() {
-                println!("  · the old `{}` instance is still there; `ge-bridge-cli link-openmausbot` replaces it", integrations::OLD_INSTANCE);
+            if cfg["instances"].get(omb::link::OLD_INSTANCE).is_some() {
+                println!("  · the old `{}` instance is still there; `ge-bridge-cli link-openmausbot` replaces it", omb::link::OLD_INSTANCE);
             }
             let img = &cfg["imageGen"];
             let img_here = img["primary"]["provider"] == "custom"
@@ -237,7 +237,7 @@ fn cmd_chat(c: &Client, prompt: &str, model: &str) -> Result<(), String> {
 }
 
 fn cmd_image(c: &Client, prompt: &str, size: Option<&str>, out: Option<PathBuf>) -> Result<(), String> {
-    let mut body = json!({ "model": ge_bridge::integrations::IMAGE_MODEL_ID, "prompt": prompt, "response_format": "b64_json", "n": 1 });
+    let mut body = json!({ "model": ge_bridge::omb::link::IMAGE_MODEL_ID, "prompt": prompt, "response_format": "b64_json", "n": 1 });
     if let Some(s) = size {
         body["size"] = json!(s);
     }
@@ -334,8 +334,8 @@ fn main() -> ExitCode {
                 if r.status == 200 {
                     println!("Linked: {}. Restart OpenMausBot to load it.", r.body["path"].as_str().unwrap_or("OpenMausBot config"));
                     match r.body["movedBots"].as_u64() {
-                        Some(n) => println!("{n} bot/thread settings moved from `{}` to `{}`.", integrations::OLD_INSTANCE, integrations::ACP_INSTANCE),
-                        None => println!("OpenMausBot is running, so bots.json was left alone: quit OpenMausBot and run this again to move bots to `{}`.", integrations::ACP_INSTANCE),
+                        Some(n) => println!("{n} bot/thread settings moved from `{}` to `{}`.", omb::link::OLD_INSTANCE, omb::link::ACP_INSTANCE),
+                        None => println!("OpenMausBot is running, so bots.json was left alone: quit OpenMausBot and run this again to move bots to `{}`.", omb::link::ACP_INSTANCE),
                     }
                     Ok(())
                 } else {

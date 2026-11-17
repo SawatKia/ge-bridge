@@ -60,10 +60,10 @@ pub(super) async fn openai_image_generations(
             state.log("info", format!("{job_id} done ({}, {} base64 chars)", img.mime, img.b64.len()));
             {
                 let mut recent = state.recent_images.lock();
-                if recent.len() >= crate::bot_images::RECENT_IMAGES_MAX {
+                if recent.len() >= crate::omb::disk::RECENT_IMAGES_MAX {
                     recent.pop_front();
                 }
-                recent.push_back(crate::bot_images::RecentImage { prompt: req.prompt.clone(), mime: img.mime.clone(), b64: img.b64.clone(), at: now_secs() });
+                recent.push_back(crate::omb::disk::RecentImage { prompt: req.prompt.clone(), mime: img.mime.clone(), b64: img.b64.clone(), at: now_secs() });
             }
             (
                 StatusCode::OK,

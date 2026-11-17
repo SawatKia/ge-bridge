@@ -263,7 +263,7 @@ pub struct AppState {
     pub pending_jobs: Mutex<HashMap<String, mpsc::UnboundedSender<DomStreamEvent>>>,
     pub pending_images: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<crate::images::GeneratedImage, String>>>>,
     /// Images made recently, waiting for the tool-result turn that saves them into the bot's folder.
-    pub recent_images: Mutex<std::collections::VecDeque<crate::bot_images::RecentImage>>,
+    pub recent_images: Mutex<std::collections::VecDeque<crate::omb::disk::RecentImage>>,
     pub sessions: Mutex<VecDeque<SessionEntry>>,
     pub logs: Mutex<VecDeque<LogEntry>>,
     pub ui_events_tx: Mutex<Vec<mpsc::UnboundedSender<String>>>,

@@ -109,7 +109,7 @@ pub(super) async fn dispatch_browser_turn(
     .await?;
 
     if let Some(t) = tools.as_deref().filter(|t| !t.is_empty()) {
-        let hidden = if crate::stream::hidden_tools_hint(t).is_some() { ", hidden-tools hint added" } else { "" };
+        let hidden = if crate::omb::hidden_tools_hint(t).is_some() { ", hidden-tools hint added" } else { "" };
         state.log(
             "debug",
             format!("{job_id}: {} tools, injected={inject_tools}{hidden}, prompt {prompt_chars} chars", t.len()),
@@ -164,7 +164,7 @@ async fn supervise_turn(
         && crate::recovery::asks_for_new_picture(crate::recovery::user_request_text(&plan.messages.last().unwrap().text).0)
         && plan.tools.as_deref().and_then(crate::stream::image_tool).is_some();
     // The turn that carries an image tool's result: save that image into the bot's folder and show it.
-    let image_prompt = crate::bot_images::image_call_prompt(&plan.messages);
+    let image_prompt = crate::omb::disk::image_call_prompt(&plan.messages);
     let judge = |text: &str| -> Option<Refusal> {
         refusal_kind(text, has_tools).or_else(|| {
             let has_call = text.contains("<tool") || text.contains("tool_call") || text.contains("TOOL_CALL");
@@ -231,7 +231,7 @@ async fn supervise_turn(
                         );
                         state.release_tab(tab.load(Ordering::Relaxed), active_model.clone());
                         let mut full_text = full_text;
-                        if let Some(note) = image_prompt.as_deref().and_then(|p| save_image_for_bot(&state, &plan.messages, p, &job_id)) {
+                        if let Some(note) = image_prompt.as_deref().and_then(|p| crate::omb::disk::save_image_for_bot(&state, &plan.messages, p, &job_id)) {
                             let _ = out.send(DomStreamEvent::Chunk { thought_delta: None, text_delta: note.clone() });
                             full_text.push_str(&note);
                         }
@@ -263,7 +263,7 @@ async fn supervise_turn(
         // Gemini write only the image prompt (a text task it does) and answer with the tool call ourselves.
         // Only on the user's own turn without a picture of theirs: after a tool result it would make another
         // picture after every image, and "I can't see the image" about an attached one is not a drawing refusal.
-        let user_turn = plan.messages.last().is_some_and(|m| m.role == "user" && m.images.is_empty() && !crate::recovery::after_recalled_passages(&m.text).contains("<attached-image"));
+        let user_turn = plan.messages.last().is_some_and(|m| m.role == "user" && m.images.is_empty() && !crate::omb::mentions_attached_image(&m.text));
         if matches!(trigger, Some(Refusal::Image | Refusal::SkippedImageTool)) && !retried && user_turn {
             if let Some(tool) = plan.tools.as_deref().and_then(crate::stream::image_tool) {
                 state.log("warn", format!("{job_id}: Gemini {reason}; asking it for an image prompt and calling the agent's image tool instead"));
@@ -299,44 +299,6 @@ async fn supervise_turn(
                 let _ = out.send(DomStreamEvent::Error(e));
                 return;
             }
-        }
-    }
-}
-
-/// Saves the image ge-bridge made for `prompt` into the asking bot's working folder (OpenMausBot's
-/// `bots.json`), or into Pictures\GeBridge when the bot is unknown, and returns the text to add to the
-/// reply (preview and link). None when no matching image is waiting.
-fn save_image_for_bot(state: &AppState, messages: &[NormalizedMessage], prompt: &str, job_id: &str) -> Option<String> {
-    use crate::bot_images::{folder_for, pick_image, reply_note, save};
-    let img = {
-        let mut recent = state.recent_images.lock();
-        let list: Vec<_> = recent.iter().cloned().collect();
-        let img = pick_image(&list, prompt, now_secs())?.clone();
-        recent.retain(|i| !(i.at == img.at && i.prompt == img.prompt));
-        img
-    };
-    // An isolated run (GE_BRIDGE_DATA_DIR, as the tests use) keeps both places inside its data folder.
-    let isolated = crate::config::active().data_dir.clone();
-    let omb = match &isolated {
-        Some(d) => d.join("openmausbot"),
-        None => dirs::home_dir()?.join(".openmausbot"),
-    };
-    let fallback = match &isolated {
-        Some(d) => d.join("Pictures").join("GeBridge"),
-        None => dirs::picture_dir().or_else(dirs::home_dir)?.join("GeBridge"),
-    };
-    let (folder, known) = match folder_for(messages, &omb) {
-        Some(f) => (f, true),
-        None => (fallback, false),
-    };
-    match save(&folder, &img) {
-        Ok(path) => {
-            state.log("info", format!("{job_id}: saved the image to {}{}", path.display(), if known { "" } else { " (bot folder unknown)" }));
-            Some(reply_note(&path))
-        }
-        Err(e) => {
-            state.log("warn", format!("{job_id}: could not save the image: {e}"));
-            None
         }
     }
 }
