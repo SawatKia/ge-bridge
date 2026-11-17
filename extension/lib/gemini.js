@@ -321,7 +321,7 @@ var GeBridgeLib = globalThis.GeBridgeLib || (() => {
             'X-Goog-Api-Client': API_CLIENT_HEADER
           },
           body: JSON.stringify(body),
-          signal: timeoutSignal(step === 'stream' ? 300000 : 30000)
+          signal: timeoutSignal(step === 'stream' ? 300000 : step === 'upload' ? 120000 : 30000)
         });
         if (res.ok) {
           log.info(`api ${step} response`, { httpStatus: res.status, ms: Math.round(now() - t0) });
@@ -362,7 +362,7 @@ var GeBridgeLib = globalThis.GeBridgeLib || (() => {
           session,
           query: { parts: [{ text: prompt }] },
           filter: '',
-          fileIds: [],
+          fileIds: opts.fileIds || [],
           answerGenerationMode: 'NORMAL',
           agentsSpec: {},
           languageCode: 'en-US',
@@ -457,19 +457,45 @@ var GeBridgeLib = globalThis.GeBridgeLib || (() => {
       }
     }
 
-    return { ensureJwt, createSession, streamAssist, downloadFile };
+    // Uploads one `data:<mime>;base64,` image into `session` (what the web UI's attach button does);
+    // resolves the fileId that a later streamAssist passes in `fileIds`.
+    async function addContextFile(session, dataUrl, fileName) {
+      const m = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl || '');
+      if (!m) throw fail('upload', new Error('attachment is not a base64 data URL'));
+      const res = await post('upload', 'widgetAddContextFile', {
+        ...baseBody(),
+        addContextFileRequest: { name: session, fileName, mimeType: m[1], fileContents: m[2] }
+      });
+      const data = await res.json().catch(() => null);
+      const fileId = data?.addContextFileResponse?.fileId;
+      if (!fileId) throw fail('upload', new Error('widgetAddContextFile response has no fileId'));
+      log.info('api file uploaded', { mimeType: m[1], b64Chars: m[2].length });
+      return fileId;
+    }
+
+    return { ensureJwt, createSession, streamAssist, downloadFile, addContextFile };
   }
 
   // One chat turn: reuses `session` when given, else creates one. A 404 on a reused session
   // (expired/deleted) gets one retry on a fresh session. Resolves { text, session }.
+  // opts.attachments: data URLs uploaded into the session first and sent as the turn's fileIds.
   async function runApiTurn(client, session, prompt, callbacks = {}, opts = {}) {
+    const { attachments = [], ...rest } = opts;
+    const turn = async (s) => {
+      const fileIds = [];
+      for (const [i, url] of attachments.entries()) {
+        const ext = (/^data:[^/]+\/([a-z0-9]+)/i.exec(url) || [])[1] || 'bin';
+        fileIds.push(await client.addContextFile(s, url, `image-${i + 1}.${ext}`));
+      }
+      return { ...(await client.streamAssist(s, prompt, callbacks, { ...rest, fileIds })), session: s };
+    };
     let s = session || await client.createSession();
     try {
-      return { ...(await client.streamAssist(s, prompt, callbacks, opts)), session: s };
+      return await turn(s);
     } catch (err) {
       if (!session || err.httpStatus !== 404) throw err;
       s = await client.createSession();
-      return { ...(await client.streamAssist(s, prompt, callbacks, opts)), session: s };
+      return await turn(s);
     }
   }
 
@@ -515,8 +541,9 @@ var GeBridgeLib = globalThis.GeBridgeLib || (() => {
 
   function transportOrder(transport, { kind = 'turn', hasImages = false, hasTarget = true } = {}) {
     if (kind === 'image') return transport === 'api-tab' || transport === 'api-sw' ? [transport] : ['api-tab', 'api-sw'];
-    if (transport === 'dom' || hasImages || !hasTarget) return ['dom'];
-    if (transport === 'auto') return ['api-tab', 'api-sw', 'dom'];
+    // Typing into the page cannot attach files: a turn with images that would only have DOM gets no transport.
+    if (transport === 'dom' || !hasTarget) return hasImages ? [] : ['dom'];
+    if (transport === 'auto') return hasImages ? ['api-tab', 'api-sw'] : ['api-tab', 'api-sw', 'dom'];
     return [transport];
   }
 
@@ -524,8 +551,10 @@ var GeBridgeLib = globalThis.GeBridgeLib || (() => {
   // failures: [{ mode, message, httpStatus }]
   function transportFailureMessage(failures, what = 'Turn') {
     if (!failures.length) return `${what} failed`;
-    if (failures.length === 1) return failures[0].message || `${what} failed`;
-    const reason = (f) => (f.httpStatus ? `HTTP ${f.httpStatus}` : String(f.message || 'failed').split(/\r?\n/)[0].slice(0, 120));
+    // An upload step is named so it reads as an image upload failure.
+    const stepped = (f, text) => (f.step === 'upload' ? `image upload failed: ${text}` : text);
+    if (failures.length === 1) return stepped(failures[0], failures[0].message || `${what} failed`);
+    const reason = (f) => stepped(f, f.httpStatus ? `HTTP ${f.httpStatus}` : String(f.message || 'failed').split(/\r?\n/)[0].slice(0, 120));
     const parts = failures.map((f) => `${TRANSPORT_LABELS[f.mode] || f.mode}: ${reason(f)}`);
     const noTab = failures.some((f) => /no scriptable gemini tab/i.test(f.message || ''));
     return `${what} failed on every way to reach Gemini (${parts.join('; ')}).`

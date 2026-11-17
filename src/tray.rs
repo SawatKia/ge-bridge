@@ -64,7 +64,7 @@ pub fn run_tray_loop(state: Arc<AppState>) {
                 let _ = state.send_to_extension(&json!({ "type": "START_CALIBRATION" }));
             } else if id == "link_openmausbot" {
                 let prefs = state.prefs.read().clone();
-                let notice = match integrations::link_openmausbot(
+                let notice = match crate::omb::link::link_openmausbot(
                     prefs.port,
                     &state.token,
                     &prefs.default_model,

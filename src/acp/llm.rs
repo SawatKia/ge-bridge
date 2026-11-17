@@ -1,9 +1,9 @@
 //! HTTP client for the running ge-bridge server (`/v1/models`, `/v1/chat/completions`) on 127.0.0.1.
 //! Raw HTTP/1.0 over a TcpStream: the server ends the body by closing the connection, so no chunk framing.
 
-use crate::{config, state};
+use crate::http_client::{self, SendError};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -44,23 +44,15 @@ pub struct Llm {
 
 impl Llm {
     pub fn new() -> Self {
-        config::init(config::RuntimeConfig::from_env());
-        Self { port: state::PersistedPrefs::load().port, token: state::load_or_create_token() }
+        let (port, token) = http_client::local_endpoint();
+        Self { port, token }
     }
 
     fn connect(&self, method: &str, path: &str, body: Option<&Value>) -> Result<TcpStream, String> {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port))
-            .map_err(|_| format!("ge-bridge is not running on 127.0.0.1:{}. Start ge-bridge.exe.", self.port))?;
-        stream.set_read_timeout(Some(POLL)).ok();
-        let payload = body.map(Value::to_string).unwrap_or_default();
-        let req = format!(
-            "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
-            self.port,
-            self.token,
-            payload.len()
-        );
-        stream.write_all(req.as_bytes()).map_err(|e| format!("could not send the request to ge-bridge: {e}"))?;
-        Ok(stream)
+        http_client::send(self.port, &self.token, method, path, body, POLL).map_err(|e| match e {
+            SendError::Connect(_) => format!("ge-bridge is not running on 127.0.0.1:{}. Start ge-bridge.exe.", self.port),
+            SendError::Write(e) => format!("could not send the request to ge-bridge: {e}"),
+        })
     }
 
     /// Model ids from `/v1/models`.

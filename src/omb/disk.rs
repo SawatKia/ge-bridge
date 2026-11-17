@@ -6,6 +6,7 @@
 //! That turn's system prompt names the bot ("You are Artist, a personal bot in OpenMausBot"), and
 //! OpenMausBot's `bots.json` maps the name to its working folder (`cwd`), or to its workspace folder.
 
+use crate::state::{now_secs, AppState};
 use crate::stream::NormalizedMessage;
 use base64::Engine;
 use serde_json::Value;
@@ -130,6 +131,43 @@ pub fn folder_for(messages: &[NormalizedMessage], omb_dir: &Path) -> Option<Path
     let raw = std::fs::read_to_string(omb_dir.join("bots.json")).ok()?;
     let bots: Value = serde_json::from_str(&raw).ok()?;
     bot_folder(&bots, name, omb_dir)
+}
+
+/// Saves the image ge-bridge made for `prompt` into the asking bot's working folder (OpenMausBot's
+/// `bots.json`), or into Pictures\GeBridge when the bot is unknown, and returns the text to add to the
+/// reply (preview and link). None when no matching image is waiting.
+pub(crate) fn save_image_for_bot(state: &AppState, messages: &[NormalizedMessage], prompt: &str, job_id: &str) -> Option<String> {
+    let img = {
+        let mut recent = state.recent_images.lock();
+        let list: Vec<_> = recent.iter().cloned().collect();
+        let img = pick_image(&list, prompt, now_secs())?.clone();
+        recent.retain(|i| !(i.at == img.at && i.prompt == img.prompt));
+        img
+    };
+    // An isolated run (GE_BRIDGE_DATA_DIR, as the tests use) keeps both places inside its data folder.
+    let isolated = crate::config::active().data_dir.clone();
+    let omb = match &isolated {
+        Some(d) => d.join("openmausbot"),
+        None => dirs::home_dir()?.join(".openmausbot"),
+    };
+    let fallback = match &isolated {
+        Some(d) => d.join("Pictures").join("GeBridge"),
+        None => dirs::picture_dir().or_else(dirs::home_dir)?.join("GeBridge"),
+    };
+    let (folder, known) = match folder_for(messages, &omb) {
+        Some(f) => (f, true),
+        None => (fallback, false),
+    };
+    match save(&folder, &img) {
+        Ok(path) => {
+            state.log("info", format!("{job_id}: saved the image to {}{}", path.display(), if known { "" } else { " (bot folder unknown)" }));
+            Some(reply_note(&path))
+        }
+        Err(e) => {
+            state.log("warn", format!("{job_id}: could not save the image: {e}"));
+            None
+        }
+    }
 }
 
 #[cfg(test)]

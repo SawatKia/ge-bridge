@@ -361,22 +361,6 @@
     };
   }
 
-  async function pasteBase64Images(composer, images) {
-    for (const dataUrl of images) {
-      const m = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-      if (!m) continue;
-      const bin = atob(m[2]);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const file = new File([bytes], `maus_screen.${m[1].split('/')[1] || 'png'}`, { type: m[1] });
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      composer.focus();
-      composer.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true, composed: true }));
-      await sleep(320);
-    }
-  }
-
   function fillComposer(composer, text) {
     composer.focus();
     if (composer.tagName === 'TEXTAREA') {
@@ -418,7 +402,6 @@
       const beforeCount = beforeBlocks.length;
       const beforeLast = beforeCount ? extractThoughtAndAnswer(beforeBlocks[beforeCount - 1]).answer : '';
 
-      if (job.images?.length) await pasteBase64Images(composer, job.images);
       fillComposer(composer, job.prompt);
       await sleep(140);
 
@@ -494,14 +477,14 @@
       chain = chain.then(() => chrome.runtime.sendMessage({ type: 'API_DELTA', jobId: job.jobId, thoughtDelta, textDelta }))
         .catch((err) => log.warn('API_DELTA send failed', { jobId: job.jobId, error: err.message }));
     };
-    log.info('RUN_TURN_API start', { jobId: job.jobId, promptChars: (job.prompt || '').length, reusedSession: Boolean(job.session) });
+    log.info('RUN_TURN_API start', { jobId: job.jobId, promptChars: (job.prompt || '').length, reusedSession: Boolean(job.session), images: (job.images || []).length });
     setHud('busy', 'API...');
     try {
       const client = GeBridgeLib.createGeminiClient({ target: job.target, origin: window.location.origin, log });
       const out = await GeBridgeLib.runApiTurn(client, job.session || null, job.prompt, {
         onThought: (d) => sendDelta(d, ''),
         onText: (d) => sendDelta('', d)
-      }, { modelId: job.modelId });
+      }, { modelId: job.modelId, attachments: job.images || [] });
       await chain;
       log.info('RUN_TURN_API end', { jobId: job.jobId, ms: Date.now() - t0, answerChars: out.text.length });
       return { ok: true, text: out.text, session: out.session, started };

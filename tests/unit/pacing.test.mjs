@@ -68,8 +68,11 @@ test('gaussian is roughly standard normal', () => {
 
 test('auto mode tries the page tab first, then the extension, then typing', () => {
   assert.deepEqual(plain(lib.transportOrder('auto')), ['api-tab', 'api-sw', 'dom']);
-  assert.deepEqual(plain(lib.transportOrder('auto', { hasImages: true })), ['dom']);
+  assert.deepEqual(plain(lib.transportOrder('auto', { hasImages: true })), ['api-tab', 'api-sw'], 'typing cannot attach files');
   assert.deepEqual(plain(lib.transportOrder('auto', { hasTarget: false })), ['dom']);
+  assert.deepEqual(plain(lib.transportOrder('dom', { hasImages: true })), [], 'dom + images: nothing can attach them');
+  assert.deepEqual(plain(lib.transportOrder('auto', { hasImages: true, hasTarget: false })), [], 'no target + images');
+  assert.deepEqual(plain(lib.transportOrder('dom')), ['dom']);
   assert.deepEqual(plain(lib.transportOrder('api-sw')), ['api-sw']);
   assert.deepEqual(plain(lib.transportOrder('auto', { kind: 'image' })), ['api-tab', 'api-sw']);
   assert.deepEqual(plain(lib.transportOrder('dom', { kind: 'image' })), ['api-tab', 'api-sw']);
@@ -85,4 +88,13 @@ test('a failure on every transport names each reason and says to open the tab', 
   assert.match(msg, /Open your Gemini Enterprise page in Chrome, signed in, and try again\.$/);
   assert.equal(lib.transportFailureMessage([{ mode: 'api-tab', message: 'boom' }]), 'boom', 'one failure keeps its own message');
   assert.equal(lib.transportFailureMessage([], 'Image generation'), 'Image generation failed');
+});
+
+test('an upload failure is named in the harness-facing message', () => {
+  assert.equal(lib.transportFailureMessage([{ mode: 'api-tab', message: 'HTTP 400 bad', step: 'upload' }]), 'image upload failed: HTTP 400 bad');
+  assert.match(lib.transportFailureMessage([
+    { mode: 'api-tab', message: 'x', step: 'upload' },
+    { mode: 'api-sw', message: 'y', httpStatus: 500, step: 'upload' },
+  ]), /API from the Gemini tab: image upload failed: x; API from the extension: image upload failed: HTTP 500/);
+  assert.equal(lib.transportFailureMessage([{ mode: 'api-tab', message: 'boom', step: 'stream' }]), 'boom');
 });

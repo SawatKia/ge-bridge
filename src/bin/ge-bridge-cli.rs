@@ -2,10 +2,10 @@
 //! It talks to the local server over HTTP with the stored pairing token; it never starts the server.
 
 use base64::Engine;
-use ge_bridge::{config, integrations, logview, state};
+use ge_bridge::http_client::{self, SendError};
+use ge_bridge::{config, logview, omb, state};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -46,23 +46,17 @@ struct Reply {
 
 impl Client {
     fn new() -> Self {
-        config::init(config::RuntimeConfig::from_env());
-        Self { port: state::PersistedPrefs::load().port, token: state::load_or_create_token() }
+        let (port, token) = http_client::local_endpoint();
+        Self { port, token }
     }
 
     /// Minimal HTTP/1.0 client: the server answers with a plain body and closes, so no chunking.
     fn call(&self, method: &str, path: &str, body: Option<&Value>, timeout_secs: u64) -> Result<Reply, String> {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port))
-            .map_err(|e| format!("ge-bridge is not running on 127.0.0.1:{} ({e})", self.port))?;
-        stream.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok();
-        let payload = body.map(Value::to_string).unwrap_or_default();
-        let req = format!(
-            "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
-            self.port,
-            self.token,
-            payload.len()
-        );
-        stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+        let mut stream = http_client::send(self.port, &self.token, method, path, body, Duration::from_secs(timeout_secs))
+            .map_err(|e| match e {
+                SendError::Connect(e) => format!("ge-bridge is not running on 127.0.0.1:{} ({e})", self.port),
+                SendError::Write(e) => e.to_string(),
+            })?;
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).map_err(|e| format!("no answer from ge-bridge: {e}"))?;
         let text = String::from_utf8_lossy(&raw);
@@ -147,13 +141,13 @@ fn cmd_doctor(c: &Client) -> bool {
     match maus.as_ref().filter(|p| p.exists()).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
         None => println!("  · OpenMausBot not found (skip)"),
         Some(cfg) => {
-            let cli = cfg["instances"][integrations::ACP_INSTANCE]["config"]["cli"].as_str().unwrap_or("");
+            let cli = cfg["instances"][omb::link::ACP_INSTANCE]["config"]["cli"].as_str().unwrap_or("");
             let exe = cli.trim_start_matches('"').split(".exe").next().map(|p| format!("{p}.exe")).unwrap_or_default();
             check(!cli.is_empty() && std::path::Path::new(&exe).exists(),
                 format!("OpenMausBot ACP engine runs {cli}"),
                 "OpenMausBot ACP engine missing or its exe moved: run `ge-bridge-cli link-openmausbot`, then restart OpenMausBot".into());
-            if cfg["instances"].get(integrations::OLD_INSTANCE).is_some() {
-                println!("  · the old `{}` instance is still there; `ge-bridge-cli link-openmausbot` replaces it", integrations::OLD_INSTANCE);
+            if cfg["instances"].get(omb::link::OLD_INSTANCE).is_some() {
+                println!("  · the old `{}` instance is still there; `ge-bridge-cli link-openmausbot` replaces it", omb::link::OLD_INSTANCE);
             }
             let img = &cfg["imageGen"];
             let img_here = img["primary"]["provider"] == "custom"
@@ -237,7 +231,7 @@ fn cmd_chat(c: &Client, prompt: &str, model: &str) -> Result<(), String> {
 }
 
 fn cmd_image(c: &Client, prompt: &str, size: Option<&str>, out: Option<PathBuf>) -> Result<(), String> {
-    let mut body = json!({ "model": ge_bridge::integrations::IMAGE_MODEL_ID, "prompt": prompt, "response_format": "b64_json", "n": 1 });
+    let mut body = json!({ "model": ge_bridge::omb::link::IMAGE_MODEL_ID, "prompt": prompt, "response_format": "b64_json", "n": 1 });
     if let Some(s) = size {
         body["size"] = json!(s);
     }
@@ -334,8 +328,8 @@ fn main() -> ExitCode {
                 if r.status == 200 {
                     println!("Linked: {}. Restart OpenMausBot to load it.", r.body["path"].as_str().unwrap_or("OpenMausBot config"));
                     match r.body["movedBots"].as_u64() {
-                        Some(n) => println!("{n} bot/thread settings moved from `{}` to `{}`.", integrations::OLD_INSTANCE, integrations::ACP_INSTANCE),
-                        None => println!("OpenMausBot is running, so bots.json was left alone: quit OpenMausBot and run this again to move bots to `{}`.", integrations::ACP_INSTANCE),
+                        Some(n) => println!("{n} bot/thread settings moved from `{}` to `{}`.", omb::link::OLD_INSTANCE, omb::link::ACP_INSTANCE),
+                        None => println!("OpenMausBot is running, so bots.json was left alone: quit OpenMausBot and run this again to move bots to `{}`.", omb::link::ACP_INSTANCE),
                     }
                     Ok(())
                 } else {
