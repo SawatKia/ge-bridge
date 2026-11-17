@@ -102,6 +102,10 @@ function harness({ stream, session, auth, lookup, download } = {}) {
     if (url.endsWith('widgetStreamAssist')) return stream(calls.filter((c) => c.url.endsWith('widgetStreamAssist')).length);
     if (url.endsWith('lookupWidgetConfig')) return lookup ? lookup() : res(200, { engineResourceDetails: { projectNumber: '4242' } });
     if (url.includes(':downloadFile?')) return download(url, opts);
+    if (url.endsWith('widgetAddContextFile')) {
+      const n = calls.filter((c) => c.url.endsWith('widgetAddContextFile')).length;
+      return res(200, { addContextFileResponse: { session: SESSION, fileId: `file-${n}` } });
+    }
     throw new Error(`unexpected ${url}`);
   };
   const logs = [];
@@ -207,6 +211,27 @@ test('runApiTurn: 404 on a reused session retries on a fresh one', async () => {
   assert.equal(out.text, 'again');
   assert.equal(out.session, SESSION);
   assert.equal(h.calls.filter((c) => c.url.endsWith('widgetCreateSession')).length, 1);
+});
+
+test('runApiTurn uploads attachments into the session and sends their fileIds', async () => {
+  const h = harness({ stream: () => res(200, JSON.stringify([obj('a cat')])) });
+  const out = await lib.runApiTurn(h.client, null, 'what is this', {}, { attachments: ['data:image/png;base64,QUJD', 'data:image/jpeg;base64,REVG'] });
+  assert.equal(out.text, 'a cat');
+  const ups = h.calls.filter((c) => c.url.endsWith('widgetAddContextFile')).map((c) => c.body.addContextFileRequest);
+  assert.deepEqual(plain(ups), [
+    { name: SESSION, fileName: 'image-1.png', mimeType: 'image/png', fileContents: 'QUJD' },
+    { name: SESSION, fileName: 'image-2.jpeg', mimeType: 'image/jpeg', fileContents: 'REVG' }
+  ]);
+  const req = h.calls.find((c) => c.url.endsWith('widgetStreamAssist')).body.streamAssistRequest;
+  assert.deepEqual(plain(req.fileIds), ['file-1', 'file-2']);
+  assert.ok(!('toolsSpec' in req), 'attachments do not turn the image tool on');
+});
+
+test('runApiTurn without attachments uploads nothing and sends empty fileIds', async () => {
+  const h = harness({ stream: () => res(200, JSON.stringify([obj('ok')])) });
+  await lib.runApiTurn(h.client, SESSION, 'q');
+  assert.equal(h.calls.filter((c) => c.url.endsWith('widgetAddContextFile')).length, 0);
+  assert.deepEqual(plain(h.calls.find((c) => c.url.endsWith('widgetStreamAssist')).body.streamAssistRequest.fileIds), []);
 });
 
 test('streamAssist sends assistGenerationConfig.modelId only for a concrete model', async () => {

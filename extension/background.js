@@ -245,7 +245,7 @@ function apiTurnInSw(msg, target, session, progress) {
   return GeBridgeLib.runApiTurn(swClientFor(target), session, msg.prompt, {
     onThought: (d) => { progress.started = true; wsSend({ type: 'DOM_DELTA', jobId: msg.jobId, thoughtDelta: d, textDelta: '' }); },
     onText: (d) => { progress.started = true; wsSend({ type: 'DOM_DELTA', jobId: msg.jobId, thoughtDelta: '', textDelta: d }); }
-  }, { modelId: msg.targetModel });
+  }, { modelId: msg.targetModel, attachments: msg.images || [] });
 }
 
 async function apiTurnInTab(msg, target, session, progress) {
@@ -259,7 +259,7 @@ async function apiTurnInTab(msg, target, session, progress) {
   const tabTarget = parseGeminiUrl(tab.url) || target;
   log.info('RUN_TURN_API to tab', { jobId: msg.jobId, tabId: tab.id });
   const r = await chrome.tabs.sendMessage(tab.id, {
-    type: 'RUN_TURN_API', jobId: msg.jobId, prompt: msg.prompt, session, target: tabTarget, modelId: msg.targetModel
+    type: 'RUN_TURN_API', jobId: msg.jobId, prompt: msg.prompt, session, target: tabTarget, modelId: msg.targetModel, images: msg.images || []
   });
   if (!r) throw new Error('No response from tab');
   if (r.started) progress.started = true;
@@ -335,8 +335,8 @@ async function handleRunTurn(rawMsg) {
     requestedModel: rawMsg.targetModel || null, model: msg.targetModel, requestedEffort: msg.reasoningEffort || null
   });
 
-  if (hasImages && transport !== 'dom') log.info('RUN_TURN has images, API skipped, using dom', { jobId: msg.jobId });
-  else if (!target && transport !== 'dom') log.warn('RUN_TURN: no Gemini target known, using dom', { jobId: msg.jobId });
+  if (hasImages && transport === 'dom') log.warn('RUN_TURN has images but transport is dom: typing cannot attach them', { jobId: msg.jobId });
+  if (!target && transport !== 'dom') log.warn('RUN_TURN: no Gemini target known, using dom', { jobId: msg.jobId });
   const order = GeBridgeLib.transportOrder(transport, { kind: 'turn', hasImages, hasTarget: Boolean(target) });
   const failures = [];
 

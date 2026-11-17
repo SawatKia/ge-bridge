@@ -778,7 +778,10 @@ async fn supervise_turn(
 
         // Image rescue: Gemini Enterprise insists it cannot draw, but the agent has an image tool. Have
         // Gemini write only the image prompt (a text task it does) and answer with the tool call ourselves.
-        if matches!(trigger, Some(Refusal::Image | Refusal::SkippedImageTool)) && !retried {
+        // Only on the user's own turn without a picture of theirs: after a tool result it would make another
+        // picture after every image, and "I can't see the image" about an attached one is not a drawing refusal.
+        let user_turn = plan.messages.last().is_some_and(|m| m.role == "user" && m.images.is_empty() && !crate::recovery::after_recalled_passages(&m.text).contains("<attached-image"));
+        if matches!(trigger, Some(Refusal::Image | Refusal::SkippedImageTool)) && !retried && user_turn {
             if let Some(tool) = plan.tools.as_deref().and_then(crate::stream::image_tool) {
                 state.log("warn", format!("{job_id}: Gemini {reason}; asking it for an image prompt and calling the agent's image tool instead"));
                 match rescue_image(&state, &plan, &tool).await {

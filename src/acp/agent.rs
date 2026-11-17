@@ -126,6 +126,39 @@ fn blocks_to_text_and_images(blocks: &Value) -> (String, Vec<String>) {
     (blocks_to_text(&Value::Array(rest)), urls)
 }
 
+const ATTACHED_IMAGE_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Pictures the person attached: OpenMausBot writes each one into the message as
+/// `<attached-image path="…" name="…" />` instead of sending an ACP image block.
+fn attached_images(text: &str) -> Vec<String> {
+    const TAG: &str = "<attached-image path=\"";
+    text.match_indices(TAG)
+        .filter_map(|(at, _)| {
+            let rest = &text[at + TAG.len()..];
+            let path = &rest[..rest.find('"')?];
+            image_data_url(Path::new(path)).map_err(|e| eprintln!("acp: attached image {path}: {e}")).ok()
+        })
+        .collect()
+}
+
+fn image_data_url(p: &Path) -> Result<String, String> {
+    use base64::Engine;
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return Err(format!("not a supported image type (.{ext})")),
+    };
+    let len = std::fs::metadata(p).map_err(|e| e.to_string())?.len();
+    if len > ATTACHED_IMAGE_MAX_BYTES {
+        return Err(format!("{len} bytes is over the {ATTACHED_IMAGE_MAX_BYTES}-byte limit"));
+    }
+    let bytes = std::fs::read(p).map_err(|e| e.to_string())?;
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
 /// `content` for a chat message: a plain string, or text plus `image_url` parts when there are images.
 fn content_with_images(text: &str, images: &[String]) -> Value {
     if images.is_empty() {
@@ -258,8 +291,9 @@ impl Agent {
             return Err(RpcError::new(-32000, "a prompt is already running in this session"));
         }
         s.cancel.store(false, Ordering::Relaxed);
-        let (prompt_text, images) = blocks_to_text_and_images(&params["prompt"]);
+        let (prompt_text, mut images) = blocks_to_text_and_images(&params["prompt"]);
         let (context, text) = split_bot_context(&prompt_text);
+        images.extend(attached_images(crate::recovery::after_recalled_passages(&text)));
         if context.is_some() {
             *s.bot_context.lock() = context;
         }
@@ -569,6 +603,22 @@ mod tests {
         let t = blocks_to_text(&b);
         assert!(t.contains("hi") && t.contains("[file: file:///a.txt] (a.txt)"));
         assert!(t.contains("File file:///b.txt:\n```\nbody\n```") && t.contains("(image omitted)"));
+    }
+
+    #[test]
+    fn attached_image_tags_become_data_urls() {
+        let dir = std::env::temp_dir().join(format!("ge-acp-att-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("a.png");
+        std::fs::write(&png, b"ABC").unwrap();
+        let text = format!(
+            "look <attached-image path=\"{}\" name=\"a.png\" /> and <attached-image path=\"{}\" name=\"x.txt\" /> and <attached-image path=\"{}\" />",
+            png.display(),
+            dir.join("x.txt").display(),
+            dir.join("missing.png").display()
+        );
+        assert_eq!(attached_images(&text), vec!["data:image/png;base64,QUJD".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

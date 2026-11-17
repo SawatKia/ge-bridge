@@ -494,14 +494,14 @@
       chain = chain.then(() => chrome.runtime.sendMessage({ type: 'API_DELTA', jobId: job.jobId, thoughtDelta, textDelta }))
         .catch((err) => log.warn('API_DELTA send failed', { jobId: job.jobId, error: err.message }));
     };
-    log.info('RUN_TURN_API start', { jobId: job.jobId, promptChars: (job.prompt || '').length, reusedSession: Boolean(job.session) });
+    log.info('RUN_TURN_API start', { jobId: job.jobId, promptChars: (job.prompt || '').length, reusedSession: Boolean(job.session), images: (job.images || []).length });
     setHud('busy', 'API...');
     try {
       const client = GeBridgeLib.createGeminiClient({ target: job.target, origin: window.location.origin, log });
       const out = await GeBridgeLib.runApiTurn(client, job.session || null, job.prompt, {
         onThought: (d) => sendDelta(d, ''),
         onText: (d) => sendDelta('', d)
-      }, { modelId: job.modelId });
+      }, { modelId: job.modelId, attachments: job.images || [] });
       await chain;
       log.info('RUN_TURN_API end', { jobId: job.jobId, ms: Date.now() - t0, answerChars: out.text.length });
       return { ok: true, text: out.text, session: out.session, started };

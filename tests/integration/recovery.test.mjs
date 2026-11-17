@@ -118,6 +118,28 @@ describe('refusal and policy-block recovery', () => {
     assert.ok(turns[1].prompt.startsWith('[ROLE]'));
   });
 
+  const rescued = (turns) => turns.some((t) => t.prompt.startsWith('Write one prompt for an AI image generator'));
+
+  it('an image refusal after a tool result is not rescued into another picture', async () => {
+    const n = s.ext.runTurns.length;
+    const call = { id: 'c1', type: 'function', function: { name: 'agents_use_tool', arguments: '{"name":"generate_image","arguments":{"prompt":"x"}}' } };
+    const r = await s.chat({
+      stream: false,
+      tools: bridged,
+      messages: [user('draw a red apple [[IMAGE_REFUSE]]'), { role: 'assistant', content: null, tool_calls: [call] }, { role: 'tool', tool_call_id: 'c1', content: 'Image made.' }],
+    });
+    assert.equal(r.status, 200);
+    assert.ok(!rescued(turnsSince(n)), 'no image rescue on a tool-result turn');
+  });
+
+  it('"cannot see the image" about an attached picture is not rescued into a new picture', async () => {
+    const n = s.ext.runTurns.length;
+    const msg = { role: 'user', content: [{ type: 'text', text: 'what is in this image? [[IMAGE_REFUSE]]' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } }] };
+    const r = await s.chat({ stream: false, tools: bridged, messages: [msg] });
+    assert.equal(r.status, 200);
+    assert.ok(!rescued(turnsSince(n)), 'no image rescue when the user attached a picture');
+  });
+
   it('anthropic stream puts thoughts in a thinking block before the text block', async () => {
     const r = await s.messages({ stream: true });
     const ev = (await sse(r)).filter((e) => e.ev).map((e) => ({ ev: e.ev, d: j(e.data) }));

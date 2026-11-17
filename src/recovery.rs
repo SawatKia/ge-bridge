@@ -140,7 +140,13 @@ const OMB_TIME_LINE: &str = "Current time when this message was sent:";
 /// end is unknown, so the request is taken to be the last paragraph). The second value is the full
 /// message when a block was dropped, for callers that want to show it with a warning.
 pub fn user_request_text(text: &str) -> (&str, Option<&str>) {
-    let t = text.trim();
+    let full = text.trim();
+    // Passages OpenMausBot recalls from earlier chats sit in front of the message; they are not the request.
+    let t = after_recalled_passages(full).trim();
+    if t.len() != full.len() {
+        let (req, _) = user_request_text(t);
+        return (req, Some(full));
+    }
     // OpenMausBot's ACP prompts carry the bot persona and instructions in front of the user's words, ending with
     // this line; a persona that talks about images must not make "สร้างไฟล์ hello.txt" a picture request.
     if let Some(at) = t.rfind(OMB_TIME_LINE) {
@@ -155,6 +161,16 @@ pub fn user_request_text(text: &str) -> (&str, Option<&str>) {
     let last = t.rsplit("\n\n").map(str::trim).find(|p| !p.is_empty()).unwrap_or("");
     let is_prefix_only = OMB_CONTEXT_PREFIXES.iter().any(|p| last.starts_with(p));
     (if is_prefix_only { "" } else { last }, Some(t))
+}
+
+const OMB_RECALL_END: &str = "[end of recalled passages";
+
+/// The part of an OpenMausBot message after its recalled-passages block (the whole text when it has none).
+pub fn after_recalled_passages(text: &str) -> &str {
+    match text.rfind(OMB_RECALL_END) {
+        Some(at) => text[at..].find('\n').map_or("", |i| &text[at + i..]),
+        None => text,
+    }
 }
 
 fn is_omb_meta(text: &str) -> bool {
@@ -349,6 +365,13 @@ Time: 17:50
         assert!(p.contains(IDOL), "{p}");
         assert!(!p.contains("web browser") && !p.contains("file terminal"), "context note leaked into the writer prompt:
 {p}");
+    }
+
+    #[test]
+    fn user_request_text_drops_recalled_passages() {
+        let t = "[1] chat \"x\": but now some characters shows as unreadable\n[end of recalled passages — the message follows]\n\nwhat is in this image?";
+        assert_eq!(user_request_text(t), ("what is in this image?", Some(t)));
+        assert_eq!(after_recalled_passages("no marker"), "no marker");
     }
 
     #[test]

@@ -188,6 +188,24 @@ describe('ge-bridge-cli acp', () => {
     await finish();
   });
 
+  it('attaches the file of an OpenMausBot <attached-image> tag, not the ones in recalled passages', async () => {
+    const dir = tmp();
+    const png = path.join(dir, 'now.png');
+    fs.writeFileSync(png, Buffer.from(FAKE_PNG_B64, 'base64'));
+    fs.writeFileSync(path.join(dir, 'old.png'), Buffer.from('old'));
+    const text = 'You are Secretary, a personal bot in OpenMausBot.\n\nCurrent time when this message was sent: Monday 19:28.\n\n'
+      + `Recalled for this message:\n\n[1] chat "x": <attached-image path="${path.join(dir, 'old.png')}" name="image.png" />\n`
+      + '[end of recalled passages — the message follows]\n\n'
+      + `what is in this image?\n\n<attached-image path="${png}" name="now.png" />`;
+    acp = start();
+    await acp.request('initialize', { protocolVersion: 1 });
+    const sid = await newSession(acp, tmp());
+    const r = await acp.request('session/prompt', promptOf(sid, text));
+    assert.equal(r.result.stopReason, 'end_turn', JSON.stringify(r));
+    assert.deepEqual(s.ext.runTurns.at(-1).images, ['data:image/png;base64,' + FAKE_PNG_B64]);
+    await finish();
+  });
+
   it('cancel while a permission is pending ends the turn as cancelled', async () => {
     const cwd = tmp();
     acp = start(() => new Promise(() => {}));

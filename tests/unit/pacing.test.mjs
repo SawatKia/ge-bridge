@@ -68,7 +68,7 @@ test('gaussian is roughly standard normal', () => {
 
 test('auto mode tries the page tab first, then the extension, then typing', () => {
   assert.deepEqual(plain(lib.transportOrder('auto')), ['api-tab', 'api-sw', 'dom']);
-  assert.deepEqual(plain(lib.transportOrder('auto', { hasImages: true })), ['dom']);
+  assert.deepEqual(plain(lib.transportOrder('auto', { hasImages: true })), ['api-tab', 'api-sw'], 'typing cannot attach files');
   assert.deepEqual(plain(lib.transportOrder('auto', { hasTarget: false })), ['dom']);
   assert.deepEqual(plain(lib.transportOrder('api-sw')), ['api-sw']);
   assert.deepEqual(plain(lib.transportOrder('auto', { kind: 'image' })), ['api-tab', 'api-sw']);
